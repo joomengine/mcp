@@ -1,8 +1,51 @@
 // Serialized into the selected owner page. All browser-side dependencies come from that Playground release.
-export async function connectOwner(base: string) {
+export async function connectOwner(base: string, agentOwned = false) {
   const app = new URL(base);
   if (location.origin !== app.origin || ![app.pathname, app.pathname + 'index.html'].includes(location.pathname)) {
     throw new Error('The selected tab navigated away from Playground.');
+  }
+  // Each MCP connection keeps its artifacts, handles and site-specific grants private.
+  // Older deployments expose only the companion API. A minimal test host may omit app.mjs.
+  const shell = await import(new URL('src/app.mjs', app).href).catch(() => undefined);
+  if (typeof shell?.getOwnerWorkspace === 'function') {
+    const owner = shell.getOwnerWorkspace();
+    const artifacts = new Map();
+    const scopes = new WeakMap<object, Record<PropertyKey, any>>();
+    const idle = Object.create(null);
+    let disposed = false;
+    const created = agentOwned ? owner.getRuntime() : undefined;
+    return {
+      agentCurrent() {
+        if (disposed) throw new Error('The owner was detached.');
+        const site = owner.getRuntime();
+        const handle = site || idle;
+        let scope = scopes.get(handle);
+        if (!scope) {
+          scope = {
+            agentModuleBase: app.href, agentOwner: owner, agentOwned: !!site && created === site,
+            [Symbol.for('joomengine.mcp.artifacts')]: artifacts,
+            agentRestore: (archive: Uint8Array, replaceWorkspaceId?: string) => owner.perform('restore', {
+              archive, replaceWorkspaceId: replaceWorkspaceId ?? (agentOwned ? site?.workspace?.id : undefined),
+            })
+          };
+          scopes.set(handle, scope);
+        }
+        const overlay = scope;
+        return new Proxy(overlay, {
+          get(target, prop) {
+            if (prop in target) return target[prop];
+            if (!site) {
+              if (prop === 'workspace') return { id: owner.state().workspaceId };
+              if (prop === 'healthy' || prop === 'closed') return false;
+              return undefined;
+            }
+            const value = Reflect.get(site, prop, site);
+            return typeof value === 'function' ? value.bind(site) : value;
+          }
+        });
+      },
+      dispose() { disposed = true; artifacts.clear(); }
+    };
   }
   const views = await import(new URL('src/runtime-views.mjs', app).href);
   const selection = views.readActiveRuntimeView({ baseURL: app.href });

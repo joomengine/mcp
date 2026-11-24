@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { Ajv } from 'ajv';
+import { providerTools } from './provider-tools.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema, GetPromptRequestSchema, ListPromptsRequestSchema, ListResourcesRequestSchema,
@@ -8,6 +9,7 @@ import {
 import { openCloudWorkspace, type Workspace } from './browser.js';
 import { WorkspaceOperations } from './operations.js';
 import { getDeploymentCatalog } from './browser-catalog.js';
+import { lifecycleTools } from './lifecycle.js';
 import { browserTools } from './browser-ui.js';
 import { attachWorkspace } from './attach.js';
 import { createJoomlaProvider, connectComposerProvider } from './joomla.js';
@@ -23,6 +25,7 @@ export interface HostOptions {
   composerSite?: string;
   artifactDirectory?: string;
   headless?: boolean;
+  profileDirectory?: string;
 }
 
 const { name: packageName, version: packageVersion } = createRequire(import.meta.url)('../package.json') as { name: string; version: string };
@@ -36,18 +39,19 @@ const bootstrap = [
   tool('skills_list', 'List packaged JCB and Playground skills with their resource URIs. Follow nextCursor for more.', { cursor: textField }),
   tool('skills_read', 'Read a packaged workflow by resource URI. Start with joomengine://skills/SKILL.md and follow its relative links.', { uri: textField }, ['uri']),
   tool('workspace_open', 'Launch a fresh site in an isolated agent browser. Use jcb-mcp for native Joomla and JCB capabilities. An open workspace must first be closed explicitly.', {
-    deployId: textField, configuration: { type: 'object' },
+    deployId: textField, configuration: { type: 'object' }, document: { type: 'object' },
+    sourceURL: textField, shareURL: textField, savedSiteKey: textField, idle: { type: 'boolean' },
   }),
   tool('workspace_close', 'Release the current workspace. Closing a cloud browser discards its private profile. Export wanted artifacts first. Closing an attached workspace leaves the client application running.'),
 ];
-const longRunning = ['workspace_open', 'workspace_attach', 'deployment_configure', 'jcb_compile', 'extension_install', 'jcb_refresh_tools', 'site_export', 'site_restore', 'backup_save', 'artifact_save', 'artifact_load'];
+const longRunning = ['workspace_open', 'workspace_attach', 'workspace_start', 'workspace_restart', 'workspace_stop', 'workspace_reset', 'workspace_resume', 'deployment_configure', 'site_console', 'jcb_compile', 'extension_install', 'jcb_refresh_tools', 'site_export', 'site_restore', 'backup_save', 'artifact_save', 'artifact_load'];
 const external = (prefix: string, label: string) => [
   tool(prefix + '_tools', 'List the ' + label + ' tool schemas, passing nextCursor as cursor for subsequent pages.', { cursor: textField }),
   tool(prefix + '_call', 'Invoke a discovered ' + label + ' tool using its exact input schema.', { name: textField, arguments: { type: 'object' } }, ['name']),
 ];
 
 export function createPlaygroundServer(options: HostOptions = {}) {
-  const tools: Tool[] = [...bootstrap, ...runtimeTools, ...browserTools, ...jcbTools, ...external('joomla', 'TypeScript Joomla MCP')];
+  const tools: Tool[] = [...bootstrap, ...lifecycleTools, ...runtimeTools, ...providerTools(!!options.composerSite), ...browserTools, ...jcbTools, ...external('joomla', 'TypeScript Joomla MCP')];
   if (options.artifactDirectory) tools.push(...hostArtifactTools);
   if (options.browserEndpoint) tools.push(tool('workspace_attach', 'Connect to the selected open Playground browser or desktop workspace using the endpoint configured by its operator. Provide tabId when more than one workspace matches.', { tabId: textField }));
   if (options.composerSite) tools.push(...external('composer', 'Composer stdio Joomla MCP'));
@@ -70,9 +74,15 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   let composer: Awaited<ReturnType<typeof connectComposerProvider>> | undefined;
   let pending: Promise<unknown> = Promise.resolve();
   let disposed = false;
+  let usedNative = false;
+
+  async function closeNative() {
+    if (usedNative && workspace) await workspace.call('native_close', {}).catch(() => {});
+    usedNative = false;
+  }
 
   async function closeWorkspace() {
-    try { await joomla?.close(); }
+    try { await closeNative(); await joomla?.close(); }
     finally { joomla = undefined; joomlaWorkspaceId = undefined; try { await workspace?.close(); } finally { workspace = undefined; } }
   }
   function checkInput(name: string, args: Record<string, unknown>) {
@@ -89,30 +99,38 @@ export function createPlaygroundServer(options: HostOptions = {}) {
         workspace = await attachWorkspace({ endpoint: options.browserEndpoint!, playgroundUrl: options.baseURL, tabId: args.tabId as string | undefined });
       } else {
         workspace = await openCloudWorkspace({ baseURL: options.baseURL, executablePath: options.executablePath, headless: options.headless,
-          deployId: (args.deployId as string | undefined) ?? 'jcb-mcp', configuration: args.configuration as Record<string, unknown> | undefined });
+          profileDirectory: options.profileDirectory, input: args, deployId: args.deployId as string | undefined, configuration: args.configuration as Record<string, unknown> | undefined });
       }
       try { return await workspace.call('workspace_info', {}); }
       catch (error) { await closeWorkspace(); throw error; }
     }
     if (name === 'workspace_close') { await closeWorkspace(); return { closed: true }; }
-    if (name.startsWith('composer_')) {
+    const delegated = name.startsWith('provider_');
+    if (name.startsWith('composer_') || (delegated && args.provider === 'composer')) {
       composer ??= await connectComposerProvider(options.composerSite!);
+      if (delegated) return composer.describe(name, args);
       return name === 'composer_tools' ? composer.listTools(args.cursor as string | undefined) : composer.callTool(args.name as string, (args.arguments ?? {}) as Record<string, unknown>);
     }
     if (!workspace) throw new Error('Open a cloud workspace or attach to an existing workspace first.');
-    if (name === 'site_restore') {
+    if (['site_restore','workspace_stop','workspace_start','workspace_reset','workspace_resume','workspace_restart','deployment_launch'].includes(name)) {
       // Replacing the site ends all site-specific write plans, even when a restore later fails.
+      await closeNative();
       await joomla?.close();
       joomla = undefined;
       joomlaWorkspaceId = undefined;
     }
     if (name === 'artifact_save' || name === 'artifact_load') return transferArtifact(workspace, options.artifactDirectory!, name, args);
-    if (name.startsWith('joomla_')) {
+    if (name.startsWith('native_') || (delegated && args.provider === 'native')) {
+      usedNative = true;
+      return workspace.call(delegated ? name.replace('provider_', 'native_') : name, args);
+    }
+    if (name.startsWith('joomla_') || (delegated && args.provider === 'joomla')) {
       const info = await workspace.call('workspace_info', {}) as { workspaceId?: string };
       if (!info.workspaceId) throw new Error('The active site has no workspace identity.');
       if (joomla && joomlaWorkspaceId !== info.workspaceId) { await joomla.close(); joomla = undefined; }
       joomla ??= await createJoomlaProvider(workspace);
       joomlaWorkspaceId = info.workspaceId;
+      if (delegated) return joomla.describe(name, args);
       return name === 'joomla_tools' ? joomla.listTools(args.cursor as string | undefined) : joomla.callTool(args.name as string, (args.arguments ?? {}) as Record<string, unknown>);
     }
     return workspace.call(name, args);

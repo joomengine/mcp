@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { createJoomlaMcp, ToolsetSchema, type ApiConfig } from '@joomengine/joomla-mcp';
-import type { JoomlaApiRequest, JoomlaApiResponse, JoomlaApiTransport } from '@joomengine/joomla-mcp/adapters';
+import { JoomlaApiError, type JoomlaApiRequest, type JoomlaApiResponse, type JoomlaApiTransport } from '@joomengine/joomla-mcp/adapters';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -11,7 +11,20 @@ interface RequestWorkspace {
 }
 
 function provider(client: Client, close: () => Promise<void>) {
+  const capabilities = client.getServerCapabilities();
   return {
+    describe(name: string, args: Record<string, unknown>) {
+      const page = args.cursor ? { cursor: String(args.cursor) } : {};
+      switch (name) {
+        case 'provider_info': return { serverInfo: client.getServerVersion(), capabilities, instructions: client.getInstructions() };
+        case 'provider_resources': return capabilities?.resources ? client.listResources(page) : { resources: [] };
+        case 'provider_resource_templates': return capabilities?.resources ? client.listResourceTemplates(page) : { resourceTemplates: [] };
+        case 'provider_resource': return client.readResource({ uri: String(args.uri) });
+        case 'provider_prompts': return capabilities?.prompts ? client.listPrompts(page) : { prompts: [] };
+        case 'provider_prompt': return client.getPrompt({ name: String(args.name), arguments: args.arguments as Record<string, string> | undefined });
+        default: throw new Error('Unknown provider operation.');
+      }
+    },
     listTools: (cursor?: string) => client.listTools(cursor ? { cursor } : {}),
     callTool: (name: string, args: Record<string, unknown> = {}) =>
       client.callTool({ name, arguments: args }, undefined, { timeout: 600_000 }),
@@ -31,7 +44,7 @@ export async function createJoomlaProvider(workspace: RequestWorkspace) {
     const response = await workspace.call('joomla.api', { ...request, workspaceId, siteUrl }) as JoomlaApiResponse;
     if (response.status < 200 || response.status >= 300) {
       // Never forward a PHP error page or token-bearing request headers as diagnostics.
-      throw new Error(`Joomla Web Services returned HTTP ${response.status}.`);
+      throw new JoomlaApiError(response.status, null);
     }
     return response;
   };
@@ -42,7 +55,7 @@ export async function createJoomlaProvider(workspace: RequestWorkspace) {
   // The injected transport owns authentication and obtains the real token inside the browser.
   const site = {
     id: 'playground',
-    toolsets: new Set(ToolsetSchema.options.filter(toolset => !['cli.discovery', 'core-update'].includes(toolset))),
+    toolsets: new Set(ToolsetSchema.options.filter(toolset => !['cli.discovery', 'jcb.execute', 'core-update'].includes(toolset))),
     api: {
       baseUrl: siteUrl, tokenEnv: 'WORKSPACE', token: 'browser-managed',
       timeoutMs: 180_000, maxResponseBytes: 5_242_880, maxPageSize: 100

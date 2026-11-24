@@ -45,11 +45,22 @@ try {
       let result;
       if (method === 'initialize') {
         res.setHeader('Mcp-Session-Id', sessionId);
-        result = { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'native-site-fixture', version: '1' } };
+        result = { protocolVersion: params.protocolVersion, capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'native-site-fixture', version: '1' } };
       } else if (method === 'tools/list') {
         result = { tools: [{ name: 'fixture_read', inputSchema: { type: 'object' } }] };
       } else if (method === 'tools/call' && params.name === 'fixture_read') {
         result = { content: [{ type: 'text', text: 'native site response' }] };
+      } else if (method === 'resources/list') {
+        assert.equal(params.cursor, 'page-two');
+        result = { resources: [{ uri: 'fixture://metadata', name: 'Metadata' }] };
+      } else if (method === 'resources/templates/list') {
+        result = { resourceTemplates: [{ uriTemplate: 'fixture://item/{id}', name: 'Item' }] };
+      } else if (method === 'resources/read') {
+        result = { contents: [{ uri: params.uri, mimeType: 'application/octet-stream', blob: 'AAE=' }] };
+      } else if (method === 'prompts/list') {
+        result = { prompts: [{ name: 'review-site', arguments: [{ name: 'component' }] }] };
+      } else if (method === 'prompts/get') {
+        result = { messages: [{ role: 'user', content: { type: 'text', text: params.arguments.component } }] };
       } else {
         throw new Error('Unexpected method ' + method);
       }
@@ -75,9 +86,17 @@ try {
   assert.equal((await provider.listTools()).tools[0].name, 'fixture_read');
   const result = await provider.callTool('fixture_read', {});
   assert.equal(result.content[0].text, 'native site response');
+  const described = (name, args = {}) => provider.describe('provider_' + name, args);
+  assert.equal((await described('info')).serverInfo.name, 'native-site-fixture');
+  assert.equal((await described('resources', { cursor: 'page-two' })).resources[0].uri, 'fixture://metadata');
+  assert.equal((await described('resource_templates')).resourceTemplates[0].uriTemplate, 'fixture://item/{id}');
+  assert.equal((await described('resource', { uri: 'fixture://item/7' })).contents[0].blob, 'AAE=');
+  assert.equal((await described('prompts')).prompts[0].name, 'review-site');
+  assert.equal((await described('prompt', { name: 'review-site', arguments: { component: 'com_demo' } })).messages[0].content.text, 'com_demo');
   await provider.close();
   provider = undefined;
-  assert.deepEqual(seen, ['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'DELETE']);
+  assert.deepEqual(seen, ['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'resources/list',
+    'resources/templates/list', 'resources/read', 'prompts/list', 'prompts/get', 'DELETE']);
   console.log('Composer bridge passed named-site discovery, invocation and session cleanup.');
 } finally {
   await provider?.close();

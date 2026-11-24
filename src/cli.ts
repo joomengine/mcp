@@ -16,6 +16,7 @@ async function main() {
     browserEndpoint: process.env.JOOMENGINE_BROWSER_ENDPOINT,
     artifactDirectory: process.env.JOOMENGINE_ARTIFACT_DIR,
     composerSite: process.env.JOOMENGINE_COMPOSER_SITE,
+    profileDirectory: process.env.JOOMENGINE_PROFILE_DIR,
     headless: process.env.JOOMENGINE_HEADED !== '1',
   };
   let close: () => Promise<void>;

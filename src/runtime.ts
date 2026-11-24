@@ -41,22 +41,27 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
     const end = Math.min(values.length, start + integer(args.limit, 100, 1, 250));
     return { items: values.slice(start, end), nextOffset: end < values.length ? end : null, total: values.length };
   }
-  async function retain(bytes: Uint8Array, filename: string, mimeType: string, kind = 'file') {
-    // Bound retained archives independently of a request's lifetime. Only release on explicit action.
+  function reserve(size: number) {
     let used = 0;
     for (const item of artifacts.values()) used += item.bytes.byteLength;
-    if (artifacts.size >= 32 || bytes.length + used > 1024 * 1024 * 1024) {
+    if (artifacts.size >= 32 || size + used > 1024 * 1024 * 1024) {
       throw new Error('Artifact space is full. Release transferred artifacts before exporting another.');
     }
-    const id = crypto.randomUUID();
+  }
+  async function checksum(bytes: Uint8Array) {
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>));
-    const sha256 = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
-    artifacts.set(id, { bytes, filename, mimeType, kind });
+    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  async function retain(bytes: Uint8Array, filename: string, mimeType: string, kind = 'file') {
+    const sha256 = await checksum(bytes);
+    reserve(bytes.byteLength);
+    const id = crypto.randomUUID();
+    artifacts.set(id, { bytes, filename, mimeType, kind, sha256 });
     return { id, filename, mimeType, size: bytes.byteLength, sha256 };
   }
-  function artifact() {
+  function artifact(uploading = false) {
     const value = artifacts.get(text(args.id, 'Artifact ID'));
-    if (!value) throw new Error('The artifact is unavailable in this workspace connection.');
+    if (!value || !!value.uploading !== uploading) throw new Error('The artifact is unavailable in this workspace connection.');
     return value;
   }
   function upstream(module: string) {
@@ -284,6 +289,41 @@ try {
       if (value.kind !== 'site') throw new Error('Restore requires a complete site export or backup.');
       if (typeof runtime.agentRestore !== 'function') throw new Error('Restore this export through Upload in the attached owner window.');
       return runtime.agentRestore(value.bytes);
+    }
+    // Host file transfer operations are internal; MCP clients can only invoke them through
+    // the operator-selected artifact directory. A partial upload is never a usable artifact.
+    case 'artifact_info': {
+      const value = artifact();
+      return { id: args.id, filename: value.filename, mimeType: value.mimeType, size: value.bytes.length, sha256: value.sha256 };
+    }
+    case 'artifact_upload_begin': {
+      const size = integer(args.size, -1, 0, 512 * 1024 * 1024);
+      const filename = text(args.filename, 'Filename');
+      if (size < 0 || !['site','file'].includes(args.kind)) throw new Error('Invalid upload metadata.');
+      reserve(size);
+      const id = crypto.randomUUID();
+      artifacts.set(id, { bytes: new Uint8Array(size), written: 0, uploading: true, kind: args.kind, filename,
+        mimeType: filename.toLowerCase().endsWith('.zip') ? 'application/zip' : 'application/octet-stream' });
+      return { id };
+    }
+    case 'artifact_upload_chunk': {
+      const value = artifact(true);
+      const input = text(args.base64, 'Upload chunk');
+      if (input.length > 4 * Math.ceil(chunkSize / 3) || args.offset !== value.written) throw new Error('Invalid upload chunk length or offset.');
+      const bytes = Uint8Array.from(atob(input), c => c.charCodeAt(0));
+      if (!bytes.length || bytes.length > chunkSize || args.offset + bytes.length > value.bytes.length) throw new Error('Upload exceeds its declared size.');
+      value.bytes.set(bytes, value.written);
+      value.written += bytes.length;
+      return { received: value.written };
+    }
+    case 'artifact_upload_finish': {
+      const value = artifact(true);
+      if (value.written !== value.bytes.length) throw new Error('The upload is incomplete.');
+      const sha256 = await checksum(value.bytes);
+      if (sha256 !== args.sha256) throw new Error('The uploaded artifact failed its SHA-256 check.');
+      value.uploading = false;
+      value.sha256 = sha256;
+      return { id: args.id, filename: value.filename, mimeType: value.mimeType, size: value.bytes.length, sha256 };
     }
     case 'artifact_read': {
       const bytes = artifact().bytes;

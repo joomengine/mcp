@@ -2,6 +2,7 @@ import type { JoomlaApiRequest, JoomlaApiResponse } from '@joomengine/joomla-mcp
 
 interface BrowserRuntime {
   baseUrl: string;
+  workspace: { id: string };
   documentRoot: string;
   agentOwned?: boolean;
   installation?: { administrator?: { username: string; password: string } };
@@ -12,6 +13,9 @@ interface BrowserRuntime {
 
 /** Runs as a closed function in the selected Playground page. Keep all runtime values in that page. */
 export async function joomlaApi(runtime: BrowserRuntime, args: Record<string, unknown>): Promise<JoomlaApiResponse> {
+  if (args.workspaceId !== runtime.workspace.id || args.siteUrl !== runtime.baseUrl) {
+    throw new Error('The active Joomla site changed. Reconnect before planning or applying further operations.');
+  }
   const { method, path, query, body, etag, idempotencyKey } = args as unknown as JoomlaApiRequest;
   if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method) || typeof path !== 'string'
       || !/^v1\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$/.test(path)
@@ -95,6 +99,8 @@ try {
   if (payload !== undefined) headers['Content-Type'] = 'application/json';
   if (etag !== undefined) headers['If-Match'] = etag;
   if (idempotencyKey !== undefined) headers['Idempotency-Key'] = idempotencyKey;
+  // An attached owner can replace its site while this request awaits browser-side authentication.
+  if (args.workspaceId !== runtime.workspace.id || args.siteUrl !== runtime.baseUrl) throw new Error('The active Joomla site changed.');
   const response = await runtime.request('api/index.php/' + path + (search.size ? '?' + search : ''), {
     method, headers, body: payload, redirect: 'error'
   });

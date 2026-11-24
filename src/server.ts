@@ -98,6 +98,12 @@ export function createPlaygroundServer(options: HostOptions = {}) {
       return name === 'composer_tools' ? composer.listTools(args.cursor as string | undefined) : composer.callTool(args.name as string, (args.arguments ?? {}) as Record<string, unknown>);
     }
     if (!workspace) throw new Error('Open a cloud workspace or attach to an existing workspace first.');
+    if (name === 'site_restore') {
+      // Replacing the site ends all site-specific write plans, even when a restore later fails.
+      await joomla?.close();
+      joomla = undefined;
+      joomlaWorkspaceId = undefined;
+    }
     if (name === 'artifact_save' || name === 'artifact_load') return transferArtifact(workspace, options.artifactDirectory!, name, args);
     if (name.startsWith('joomla_')) {
       const info = await workspace.call('workspace_info', {}) as { workspaceId?: string };

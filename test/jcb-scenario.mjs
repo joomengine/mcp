@@ -43,7 +43,7 @@ async function generatedRead(native) {
   return { id: data[0].id, type: data[0].type, attributes: data[0].attributes.name };
 }
 
-export async function exerciseJcb(client, { beforeRestore } = {}) {
+export async function exerciseJcb(client, { replaceWorkspaceId } = {}) {
   const call = (name, args) => invoke(client, name, args);
   const native = (name, args) => call('native_call', { name, arguments: args });
   const available = await call('jcb_list_components');
@@ -103,8 +103,7 @@ export async function exerciseJcb(client, { beforeRestore } = {}) {
   const original = await generatedRead(native);
   const archive = await call('site_export', { format: 'bundle' });
   assert.ok(archive.size > component.size && /^[a-f0-9]{64}$/.test(archive.sha256));
-  await beforeRestore?.();
-  const restored = await call('site_restore', { id: archive.id });
+  const restored = await call('site_restore', { id: archive.id, ...(replaceWorkspaceId ? { replaceWorkspaceId } : {}) });
   assert.equal(restored.restored, true);
   if (restored.sha256) assert.equal(restored.sha256, archive.sha256);
   await verifySource();

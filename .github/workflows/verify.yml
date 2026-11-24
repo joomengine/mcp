@@ -107,3 +107,18 @@ jobs:
         run: |
           if [ "$ATTACH_BROWSER" = chromium ]; then export ATTACH_EXECUTABLE="$(command -v google-chrome)"; fi
           node --test test/attach-live.mjs
+  fresh-component:
+    name: Author and operate a new JCB Notes component
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run skills
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: node test/fresh-notes-live.mjs

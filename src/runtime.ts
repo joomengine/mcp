@@ -288,7 +288,10 @@ try {
       const value = artifact();
       if (value.kind !== 'site') throw new Error('Restore requires a complete site export or backup.');
       if (typeof runtime.agentRestore !== 'function') throw new Error('Restore this export through Upload in the attached owner window.');
-      return runtime.agentRestore(value.bytes);
+      if (args.replaceWorkspaceId !== undefined && text(args.replaceWorkspaceId, 'Replacement workspace ID') !== runtime.workspace.id) {
+        throw new Error('The active workspace does not match replaceWorkspaceId. Inspect workspace_info before restoring.');
+      }
+      return runtime.agentRestore(value.bytes, args.replaceWorkspaceId);
     }
     // Host file transfer operations are internal; MCP clients can only invoke them through
     // the operator-selected artifact directory. A partial upload is never a usable artifact.

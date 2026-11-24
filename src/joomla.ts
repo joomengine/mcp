@@ -21,11 +21,14 @@ function provider(client: Client, close: () => Promise<void>) {
 
 /** Bind an upstream Joomla action to the browser's own authenticated request channel. */
 export async function createJoomlaProvider(workspace: RequestWorkspace) {
+  const info = await workspace.call('workspace_info', {}) as { workspaceId?: string; siteUrl?: string };
+  if (!info.workspaceId || !info.siteUrl) throw new Error('The active Joomla workspace has no site identity.');
+  const { workspaceId, siteUrl } = info;
   const request = async (_config: ApiConfig, request: JoomlaApiRequest): Promise<JoomlaApiResponse> => {
     if (request.authentication === 'joomla-update-token') {
       throw new Error('The Joomla core updater requires a separately configured Joomla Update token.');
     }
-    const response = await workspace.call('joomla.api', { ...request }) as JoomlaApiResponse;
+    const response = await workspace.call('joomla.api', { ...request, workspaceId, siteUrl }) as JoomlaApiResponse;
     if (response.status < 200 || response.status >= 300) {
       // Never forward a PHP error page or token-bearing request headers as diagnostics.
       throw new Error(`Joomla Web Services returned HTTP ${response.status}.`);
@@ -36,12 +39,12 @@ export async function createJoomlaProvider(workspace: RequestWorkspace) {
     request,
     get: (config, path, query) => request(config, { method: 'GET', path, query })
   };
-  // No fetch transport uses this configuration. The actual URL and credentials live in the workspace.
+  // The injected transport owns authentication and obtains the real token inside the browser.
   const site = {
     id: 'playground',
     toolsets: new Set(ToolsetSchema.options.filter(toolset => !['cli.discovery', 'core-update'].includes(toolset))),
     api: {
-      baseUrl: 'https://workspace.invalid', tokenEnv: 'WORKSPACE', token: 'browser-managed',
+      baseUrl: siteUrl, tokenEnv: 'WORKSPACE', token: 'browser-managed',
       timeoutMs: 180_000, maxResponseBytes: 5_242_880, maxPageSize: 100
     }
   };

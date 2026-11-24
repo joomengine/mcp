@@ -25,9 +25,9 @@ export async function connectOwner(base: string) {
     if (!node) throw new Error('The owner window is missing the Playground control ' + id + '.');
     return node as T;
   }
-  async function wait(check: () => boolean, message: string, timeout: number) {
+  async function wait(check: () => boolean | Promise<boolean>, message: string, timeout: number) {
     const end = Date.now() + timeout;
-    while (!check()) {
+    while (!await check()) {
       if (Date.now() >= end) throw new Error(message);
       await new Promise(resolve => setTimeout(resolve, 150));
     }
@@ -89,28 +89,64 @@ export async function connectOwner(base: string) {
     await runtime.flush();
   };
 
-  runtime.agentRestore = async (archive: Uint8Array<ArrayBuffer>) => {
+  runtime.agentRestore = async (archive: Uint8Array<ArrayBuffer>, replaceWorkspaceId?: string) => {
     const input = control<HTMLInputElement>('upload-site-file');
     if (control<HTMLButtonElement>('upload-site-button').disabled || document.querySelector('dialog[open]')) {
       throw new Error('Finish the active operation or dialog in the Playground owner before restoring.');
     }
     const previous = runtime.workspace.id;
+    if (replaceWorkspaceId !== undefined && replaceWorkspaceId !== previous) {
+      throw new Error('The workspace changed before it could be restored.');
+    }
+    const translated = replaceWorkspaceId ? await import(new URL('src/i18n.mjs', app).href) : undefined;
     const files = new DataTransfer();
     files.items.add(new File([archive], 'playground-site.zip', { type: 'application/zip' }));
-    input.files = files.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
     let sawChoice = false;
-    await wait(() => {
-      // Replacement is independently confirmed by the client in the owner window.
-      if (document.querySelector('dialog[open] [data-replace-choice]')) sawChoice = true;
-      const feedback = document.getElementById('header-feedback');
-      if (feedback && !feedback.hidden && feedback.dataset.error === 'true') throw new Error(feedback.textContent || 'The site archive could not be restored.');
-      if (runtime.healthy && runtime.workspace.id !== previous) return true;
-      if (sawChoice && !document.querySelector('dialog[open] [data-replace-choice]') && !control<HTMLButtonElement>('upload-site-button').disabled) {
-        throw new Error('The owner closed the replacement operation without switching the workspace.');
-      }
-      return false;
-    }, 'The restore is pending or was cancelled in the owner window. Inspect the workspace before retrying.', 575_000);
+    let choiceHandled = false;
+    let interrupted = false;
+    // Another client interaction during import revokes automatic continuation for this upload.
+    const interaction = new AbortController();
+    const recordInteraction = (event: Event) => { if (event.isTrusted) interrupted = true; };
+    document.addEventListener('click', recordInteraction, { capture: true, signal: interaction.signal });
+    document.addEventListener('change', recordInteraction, { capture: true, signal: interaction.signal });
+    const feedback = document.getElementById('header-feedback');
+    const priorError = !feedback?.hidden && feedback?.dataset.error === 'true' ? feedback.textContent : null;
+    try {
+      input.files = files.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(async () => {
+        if (runtime.healthy && runtime.workspace.id !== previous) return true;
+        const dialog = document.querySelector<HTMLDialogElement>('dialog[open][data-live-replacement="true"]');
+        if (dialog) {
+          sawChoice = true;
+          if (replaceWorkspaceId && !choiceHandled && !interrupted
+              && dialog.querySelector('#live-replacement-title')?.textContent === translated.t('lifecycle.replaceConfirm')) {
+            // A fresh handshake asks the owner for its current ID while this specific prompt is open.
+            const current = await views.attachRuntimeView({ token: selection.token, baseURL: app.href });
+            try {
+              if (current.workspace.id !== replaceWorkspaceId || !current.healthy) {
+                throw new Error('The workspace changed before confirming the restore. Review the open owner prompt.');
+              }
+              if (!interrupted && dialog.isConnected && dialog.open) {
+                const accept = dialog.querySelector<HTMLButtonElement>('button[data-replace-choice="continue"]');
+                if (!accept || accept.disabled) throw new Error('The owner cannot accept the site replacement.');
+                choiceHandled = true;
+                accept.click();
+              }
+            } finally { current.dispose(); }
+          }
+        }
+        if (feedback && !feedback.hidden && feedback.dataset.error === 'true' && feedback.textContent !== priorError) {
+          throw new Error(feedback.textContent || 'The site archive could not be restored.');
+        }
+        const launchError = document.querySelector('#error-view:not([hidden]) #error-message')?.textContent;
+        if (launchError) throw new Error(launchError);
+        if (sawChoice && !dialog && !control<HTMLButtonElement>('upload-site-button').disabled) {
+          throw new Error('The owner closed the replacement operation without switching the workspace.');
+        }
+        return false;
+      }, 'The restore is pending or was cancelled in the owner window. Inspect the workspace before retrying.', 575_000);
+    } finally { interaction.abort(); }
     return { workspaceId: runtime.workspace.id, restored: true };
   };
   return runtime;

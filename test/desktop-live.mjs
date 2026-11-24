@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { DebugConnection } from '../dist/attach-wire.js';
-import { armRestoreConfirmation } from './confirm-restore.mjs';
 import { exerciseJcb } from './jcb-scenario.mjs';
 
 const binary = process.argv[2];
@@ -55,15 +54,14 @@ async function waitForDesktop(endpoint, child) {
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) throw new Error('The desktop process exited during startup.');
     let wire;
-    let state, debuggerUrl;
+    let state;
     try {
       const discovery = await fetch(endpoint + '/json/list', { signal: AbortSignal.timeout(4000) });
       const tabs = await discovery.json();
       const tab = tabs.find(item => item.type === 'page' && new URL(item.url).origin === 'https://playground.joomengine.org'
         && new URL(item.url).pathname === '/');
       if (tab) {
-        debuggerUrl = new URL(tab.webSocketDebuggerUrl);
-        wire = await DebugConnection.open(debuggerUrl);
+        wire = await DebugConnection.open(new URL(tab.webSocketDebuggerUrl));
         if (!selectedRecipe) {
           const navigation = await wire.request('Page.navigate', { url: 'https://playground.joomengine.org/?deploy=jcb-mcp&immediate=1' }, 15000);
           if (navigation.errorText) throw new Error(navigation.errorText);
@@ -78,7 +76,7 @@ async function waitForDesktop(endpoint, child) {
       lastState = error.message;
     } finally { wire?.close(); }
     if (state?.error) throw new Error('Playground failed to start JCB: ' + state.error);
-    if (state?.phase === 'ready') return debuggerUrl;
+    if (state?.phase === 'ready') return;
     if (state?.phase && state.phase !== lastState) {
       lastState = state.phase;
       console.log('Desktop is ' + lastState);
@@ -133,7 +131,7 @@ try {
   }
   child = spawn(path.resolve(binary), [], { stdio: 'inherit', env });
   await once(child, 'spawn');
-  const debuggerUrl = await waitForDesktop(endpoint, child);
+  await waitForDesktop(endpoint, child);
   client = await connectClient(endpoint);
   const workspace = await call(client, 'workspace_attach');
   assert(workspace.healthy && workspace.workspaceId);
@@ -154,13 +152,7 @@ try {
   assert.deepEqual(rows.rows, [{ value: marker }]);
   assert.equal(child.exitCode, null);
   console.log('A fresh MCP client reattached to the same JCB desktop site and verified the saved file and MariaDB row.');
-  await exerciseJcb(client, { beforeRestore: async () => {
-    const wire = await DebugConnection.open(debuggerUrl);
-    try {
-      const reply = await wire.request('Runtime.evaluate', { expression: '(' + armRestoreConfirmation + ')()' });
-      assert(!reply.exceptionDetails, 'The desktop owner could not prepare its test restore confirmation.');
-    } finally { wire.close(); }
-  } });
+  await exerciseJcb(client, { replaceWorkspaceId: resumed.workspaceId });
   await call(client, 'workspace_close');
 } finally {
   try { await client?.close(); }

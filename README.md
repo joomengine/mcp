@@ -4,7 +4,7 @@
 
 | Workspace | Connection | Lifecycle |
 | --- | --- | --- |
-| Agent's own cloud browser | `workspace_open` launches an isolated Chromium instance on the MCP host | The agent selects a deployment and exports wanted work before closing. |
+| Agent's own cloud browser | `workspace_open` launches an isolated Chromium instance on the MCP host | The default session is disposable. Set `JOOMENGINE_PROFILE_DIR` to keep saved sites across sessions. |
 | Client's browser | `workspace_attach` connects to the designated running owner in Chromium or Firefox | The client and agent share the same live files and database. Detach leaves the site running. |
 | JoomEngine Desktop | `workspace_attach` connects to the application's designated webview | The desktop profile retains its site. [Browser and desktop setup](docs/attach.md) |
 
@@ -47,6 +47,12 @@ export JOOMENGINE_ARTIFACT_DIR="$PWD/artifacts"
 node dist/cli.js
 ```
 
+## Manage a workspace
+
+`workspace_open` starts a deployment in the real Playground dashboard. For a previously saved profile, pass `{"idle":true}`, call `workspace_sites`, and supply a returned `storageKey` to `workspace_resume`. Opening with `{"savedSiteKey":"…"}` resumes a known site directly. A dedicated `JOOMENGINE_PROFILE_DIR` preserves files, database, settings and named backups between MCP processes. Closing an attached connection leaves the user's application running.
+
+Use `workspace_stop`, `workspace_start` and `workspace_restart` for runtime management. Use `workspace_rename` or `workspace_delete` for saved sites. A reset deletes the selected site's data and launches the dashboard's default deployment. Pass the exact ID returned by `workspace_info` to reset. A separately exported complete-site backup can be restored later. The native owner checks pending forms and editor changes during transitions.
+
 ## Build a component
 
 1. Read `joomengine://skills/SKILL.md` and the request-to-extension workflow, or select a build prompt through MCP. Tool-only clients can use `skills_list` and `skills_read` for the same guidance. Skills, supporting examples and tools are available offline in the package. Each build records the exact upstream revision in `skills/manifest.json`.
@@ -60,6 +66,7 @@ node dist/cli.js
 | Variable | Purpose |
 | --- | --- |
 | `JOOMENGINE_CHROMIUM_PATH` | Use an existing compatible Chromium executable for an agent-owned browser. |
+| `JOOMENGINE_PROFILE_DIR` | Absolute path to a dedicated, persistent Chromium profile for agent-owned sites. Use one MCP owner at a time. |
 | `JOOMENGINE_HEADED=1` | Show the agent-owned Chromium window on a host with a display. |
 | `JOOMENGINE_BROWSER_ENDPOINT` | Enable attachment to a specific loopback browser or desktop debugging endpoint. |
 | `JOOMENGINE_PLAYGROUND_URL` | Select a trusted alternative Playground root. The default is `https://playground.joomengine.org/`. |

@@ -56,6 +56,15 @@ export async function connectOwner(base: string, agentOwned = false) {
     throw new Error('The selected site is stopped or unavailable. Resume it in the owner window.');
   }
 
+  // Older Playground builds store a profile-wide discovery pointer. A second
+  // owner may have updated it since this tab's preview was opened.
+  const selectedFrame = document.querySelector<HTMLIFrameElement>('iframe#site-frame');
+  const previewUrl = selectedFrame?.getAttribute('src');
+  if (!previewUrl || !new URL(previewUrl, location.href).href.startsWith(runtime.baseUrl)) {
+    runtime.dispose();
+    throw new Error('The running preview does not match this tab’s selected owner. Re-select the intended owner window.');
+  }
+
   // Fetch Headers are not a structured-clone type. The installed native MCP client passes
   // Headers, while the Playground companion sends each request through BroadcastChannel.
   const ownerRequest = runtime.request.bind(runtime);

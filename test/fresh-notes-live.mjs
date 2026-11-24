@@ -48,6 +48,7 @@ async function prepareRecord(record) {
   return { ...record, fields };
 }
 const admin = '/administrator/index.php?option=com_mcpnotebook';
+const probe = 'JoomEngine MCP native source trace';
 const ids = { field: randomUUID(), view: randomUUID(), component: randomUUID() };
 const xml = '<field type="text" name="title" label="Title" description="Note title" maxlength="120" required="true" filter="STRING" />';
 try {
@@ -65,7 +66,8 @@ try {
     { key: 'notes-title', view: 'field', guid: ids.field, fields: { published: 1, access: 1, name: 'MCP Notebook Title',
       fieldtype: rows[0].guid, xml, datatype: 'VARCHAR', datalenght: 'Other', datalenght_other: '120', datadefault: '', indexes: '0', store: '0' } },
     { key: 'notes-view', view: 'admin_view', guid: ids.view, fields: { published: 1, access: 1, system_name: 'MCP Notebook Notes',
-      name_single: 'Note', name_list: 'Notes', short_description: 'Manage notebook notes', type: '1' } },
+      name_single: 'Note', name_list: 'Notes', short_description: 'Manage notebook notes', type: '1',
+      add_php_before_save: '1', php_before_save: '// ' + probe } },
     { key: 'notebook', view: 'joomla_component', guid: ids.component, fields: { published: 1, access: 1,
       name: 'MCP Notebook', system_name: 'MCP Notebook', name_code: 'mcpnotebook', short_description: 'Administrator notebook',
       author: 'JoomEngine', companyname: 'JoomEngine', email: 'qa@example.test', website: 'https://joomengine.org/',
@@ -83,7 +85,8 @@ try {
   assert(created.results.length === 5 && created.results.every(r => r.status === 'applied'), JSON.stringify(created));
   const component = created.results.find(r => r.key === 'notebook');
   assert.equal(component.guid, ids.component);
-  const compiled = await call('jcb_compile', { componentId: component.id, joomlaMajor: 6 });
+  const compiled = await call('jcb_compile', { componentId: component.id, joomlaMajor: 6,
+    options: { add_placeholders: '1', debug_line_nr: '1' } });
   const installer = compiled.packages.find(p => /^com_mcpnotebook_v1_0_0__J6\.zip$/i.test(p.filename));
   assert(installer, JSON.stringify(compiled));
   const exported = await call('file_export', { path: installer.path });
@@ -92,6 +95,19 @@ try {
   const form = await call('file_read', { path: '/administrator/components/com_mcpnotebook/forms/note.xml' });
   assert.match(form.content, /name="title"/);
   assert.match(form.content, /maxlength="120"/);
+  let cursor;
+  let generatedFile;
+  do {
+    const result = await call('file_search', { path: '/administrator/components/com_mcpnotebook', kind: 'text',
+      query: probe, caseSensitive: true, ...(cursor ? { cursor } : {}) });
+    generatedFile = result.results[0]?.path;
+    cursor = result.cursor;
+  } while (cursor && !generatedFile);
+  assert.ok(generatedFile, 'The authored PHP hook must be present in the compiled administrator code');
+  const generated = await call('file_read', { path: generatedFile });
+  const view = created.results.find(item => item.key === 'notes-view');
+  assert(generated.content.includes('JCBGUI.admin_view.php_before_save.' + view.id + '.'),
+    'Compiler source tracing must identify the exact authored admin view and PHP field');
   const destination = tablePrefix + 'mcpnotebook_note';
   async function saveTitle(title, id = 0) {
     // The controller opens the edit session and checks the site's create/edit permissions.

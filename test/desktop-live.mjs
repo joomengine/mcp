@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { DebugConnection } from '../dist/attach-wire.js';
+import { exerciseWorkspaceSurfaces } from './attach-ui-scenario.mjs';
+import { exerciseDeployment } from './deployment-scenario.mjs';
 import { exerciseJcb } from './jcb-scenario.mjs';
 
 const binary = process.argv[2];
@@ -139,6 +141,9 @@ try {
   const workspace = await call(client, 'workspace_attach');
   assert(workspace.healthy && workspace.workspaceId);
   assert.equal(workspace.deployId, 'jcb-mcp');
+  const invoke = (name,args) => call(client,name,args);
+  await exerciseWorkspaceSurfaces(invoke);
+  await exerciseDeployment(invoke);
   const marker = randomUUID();
   const file = '/tmp/mcp-desktop-' + marker + '.txt';
   await call(client, 'file_write', { path: file, content: marker, expectedRevision: null });

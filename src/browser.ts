@@ -1,6 +1,7 @@
 import { chromium, type JSHandle, type Page } from 'playwright';
 import { connectOwner } from './attach-owner.js';
 import { isAbsolute } from 'node:path';
+import { browserInput, usesNativeInput } from './browser-input.js';
 import { browserHandlerSource } from './browser-router.js';
 import { playgroundBase } from './browser-catalog.js';
 export { getDeploymentCatalog } from './browser-catalog.js';
@@ -24,9 +25,7 @@ export interface CloudOptions {
 export async function workspaceFromHandle(page: Page, owner: JSHandle, release: () => Promise<void>): Promise<Workspace> {
   const handlers = new Map<string, Promise<JSHandle>>();
   let closed: Promise<void> | undefined;
-  return {
-    async call(operation, args) {
-      if (closed) throw new Error('This browser workspace is closed.');
+  async function invoke(operation: string, args: Record<string, unknown>): Promise<any> {
       const source = browserHandlerSource(operation);
       let handle = handlers.get(source);
       if (!handle) {
@@ -36,6 +35,15 @@ export async function workspaceFromHandle(page: Page, owner: JSHandle, release: 
       return page.evaluate(async ({ owner, invoke, operation, args }: any) =>
         invoke.call(owner.agentCurrent?.() ?? owner, operation, args),
       { owner, invoke: await handle, operation, args });
+  }
+  return {
+    async call(operation, args) {
+      if (closed) throw new Error('This browser workspace is closed.');
+      if (!usesNativeInput(operation)) return invoke(operation,args);
+      const cdp = await page.context().newCDPSession(page);
+      try {
+        return await browserInput(operation, args, invoke, (method, params) => cdp.send(method as Parameters<typeof cdp.send>[0], params as never));
+      } finally { await cdp.detach().catch(()=>{}); }
     },
     close() {
       return closed ??= (async () => {

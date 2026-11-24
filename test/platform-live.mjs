@@ -1,6 +1,6 @@
 // Exercise the public stdio tools on a disposable hosted Joomla site. No mocked browser, filesystem or database.
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -71,12 +71,50 @@ try {
   assert.notEqual(final.revision, original.revision);
   assert.equal((await call('site_request', { path: phpPath })).body, 'BREAKPOINT VALUE');
 
+  console.log('Applying a revision-checked change set, importing binary bytes, finding and undoing the edit');
+  const scratch = '/tmp/mcp-file-operations';
+  const binary = Uint8Array.from([0, 255, 9, 0, 127]);
+  await writeFile(join(directory, 'editor.bin'), binary);
+  const binaryArtifact = await call('artifact_load', { filename: 'editor.bin', kind: 'file' });
+  await call('file_manage', { action: 'mkdir', path: scratch });
+  await call('file_import', { path: scratch + '/editor.bin', id: binaryArtifact.id, expectedRevision: null });
+  const before = await call('file_stat', { path: scratch + '/editor.bin', revision: true });
+  assert.equal(before.revision, binaryArtifact.sha256);
+  const batch = await call('file_batch', { changes: [
+    { operation: 'write', path: scratch + '/editor.bin', expectedRevision: before.revision, content: 'A unique editor phrase.' },
+    { operation: 'write', path: scratch + '/note.txt', expectedRevision: null, content: 'A second editor document.' },
+  ] });
+  assert(batch.ok && batch.recoveryId);
+  assert((await call('file_history')).items.some(item => item.id === batch.recoveryId));
+  const search = await call('file_search', { path: scratch, kind: 'text', query: 'editor', isWordMatch: true, include: ['**/*.txt'], maxResults: 1 });
+  assert(search.results.some(item => item.path.endsWith('/note.txt')));
+  if (search.cursor) assert((await call('file_search_cancel', { cursor: search.cursor })).cancelled);
+  await call('file_manage', { action: 'recover', recoveryId: batch.recoveryId });
+  assert.equal((await call('file_stat', { path: scratch + '/editor.bin', revision: true })).revision, before.revision);
+  assert.equal(await call('file_stat', { path: scratch + '/note.txt' }), null);
+
   console.log('Creating and updating a row with prepared SQL against MariaDB');
   await sql('CREATE TABLE mcp_platform_probe (id INT NOT NULL PRIMARY KEY, message VARCHAR(100) NOT NULL)');
   await sql('INSERT INTO mcp_platform_probe (id, message) VALUES (?, ?)', [1, 'before']);
   await sql('UPDATE mcp_platform_probe SET message = ? WHERE id = ?', ['in the backup', 1]);
   const readRow = async () => (await sql('SELECT message FROM mcp_platform_probe WHERE id = ?', [1])).rows[0].message;
   assert.equal(await readRow(), 'in the backup');
+
+  const binaryQuery = await call('database_query', { sql: 'SELECT ? AS payload, CAST(9007199254740993 AS SIGNED) AS id', parameters: [{ base64: 'AP8J' }], binaryColumns: ['payload'] });
+  assert.deepEqual(binaryQuery.rows[0], { payload: { base64: 'AP8J' }, id: '9007199254740993' });
+
+  console.log('Importing a SQL file through Adminer’s own form and reading back its data');
+  const viewer = await call('database_open');
+  assert.equal(viewer.path, '/__adminer/');
+  await writeFile(join(directory, 'adminer.sql'), "INSERT INTO mcp_platform_probe (id, message) VALUES (2, 'Adminer import');");
+  const script = await call('artifact_load', { filename: 'adminer.sql', kind: 'file' });
+  await call('browser_navigate', { path: viewer.path + '?import=' });
+  const fileSelector = '#form input[type=file]';
+  await call('browser_inspect', { waitForSelector: fileSelector });
+  await call('browser_upload', { selector: fileSelector, artifactIds: [script.id] });
+  await call('browser_click', { selector: '#form input[type=submit][title="Ctrl+Enter"]' });
+  await waitFor(async () => (await sql('SELECT message FROM mcp_platform_probe WHERE id = ?', [2])).rows[0]?.message === 'Adminer import', 'Adminer upload and commit');
+  await call('workspace_cache_clear');
 
   console.log('Pausing a real PHP request and inspecting its call stack and local variable');
   const line = versionTwo.split('\n').findIndex(code => code.includes('$result = strtoupper')) + 1;
@@ -118,19 +156,37 @@ try {
   }, 'the parsed inbox message');
   const details = await call('mail_get', { id: message.id });
   assert.match(details.content, /Captured by the Playground mail API/);
+  const headers = await call('mail_get', { id: message.id, format: 'headers' });
+  assert(headers.headers.some(header => header.key === 'subject' && header.value.includes('platform acceptance')));
   const eml = await call('mail_get', { id: message.id, format: 'raw' });
   const emlChunk = await call('artifact_read', { id: eml.id });
   const raw = Buffer.from(emlChunk.base64, 'base64').toString('utf8');
   assert.match(raw, /Subject: JoomEngine platform acceptance/i);
   assert.match(raw, /tester@example\.invalid/i);
 
-  console.log('Saving a named backup and moving it into a fresh browser workspace');
+  assert.equal((await call('mail_clear')).count, 0);
+  assert.equal((await call('mail_list')).total, 0);
+
+  console.log('Saving and updating a named backup, checking revision conflicts, and transferring it to a fresh workspace');
   const backup = await call('backup_save', { name: 'MCP platform acceptance' });
   assert((await call('backup_list')).items.some(item => item.id === backup.id && item.size === backup.size));
+  const updated = await call('backup_update', { id: backup.id, expectedRevision: backup.revision, name: 'Updated platform fixture' });
+  assert.equal(updated.id, backup.id);
+  assert.equal(updated.revision, backup.revision + 1);
+  assert.equal(updated.name, 'Updated platform fixture');
+  assert.equal((await request('backup_delete', { id: backup.id, expectedRevision: backup.revision })).isError, true);
   const archive = await call('backup_export', { id: backup.id });
   const saved = await call('artifact_save', { id: archive.id, filename: 'platform-proof.zip' });
   assert.equal(saved.sha256, archive.sha256);
-  assert.equal((await stat(join(directory, saved.filename))).size, backup.size);
+  assert.equal((await stat(join(directory, saved.filename))).size, updated.size);
+  const copy = await call('backup_import', { id: archive.id, name: 'Imported platform fixture' });
+  assert.notEqual(copy.id, backup.id);
+  assert.equal(copy.size, updated.size);
+  assert.equal((await call('backup_delete', { id: copy.id, expectedRevision: copy.revision })).deleted, true);
+  assert.equal((await call('backup_list')).items.some(item => item.id === copy.id), false);
+  const storage = await call('storage_list');
+  assert(Array.isArray(storage.items));
+  assert.equal((await request('storage_remove', { id: 'native:missing' })).isError, true);
   await call('workspace_close');
   await call('workspace_open', { deployId: 'blank' });
   const uploaded = await call('artifact_load', { filename: saved.filename, kind: 'site' });

@@ -24,9 +24,24 @@ jobs:
           coverage: none
       - run: npm ci
       - run: npm run build
-      - name: Exercise the released PHP client over stdio and TLS
+      - name: Exercise the PHP client over stdio and TLS
         run: |
           client_directory="$RUNNER_TEMP/joomengine-php-client"
           mkdir -p "$client_directory"
-          composer require --no-interaction --no-progress --working-dir="$client_directory" 'joomengine/mcp-client:^1.0'
+          if ! composer require --no-interaction --no-progress --working-dir="$client_directory" 'joomengine/mcp-client:^1.0' > "$RUNNER_TEMP/composer-client.log" 2>&1; then
+            cat "$RUNNER_TEMP/composer-client.log"
+            # Until mcp_client#5 ships, Packagist's only stable release requires an SDK blocked by Composer.
+            grep -Fq 'PKSA-s52d-n7sx-trsg' "$RUNNER_TEMP/composer-client.log" || exit 1
+            ref=adc0d788cbef14e6880c8befdfdb504c4de00c10
+            checkout="$RUNNER_TEMP/joomengine-mcp-client-candidate"
+            git init -q "$checkout"
+            git -C "$checkout" fetch -q --depth=1 https://github.com/joomengine/mcp_client.git "$ref"
+            git -C "$checkout" checkout -q --detach FETCH_HEAD
+            echo 'Testing the SDK compatibility fix from joomengine/mcp_client#5.' >> "$GITHUB_STEP_SUMMARY"
+            cd "$client_directory"
+            composer init --name=joomengine/stdio-consumer --no-interaction
+            composer config repositories.client path "$checkout"
+            COMPOSER_ROOT_VERSION=dev-main composer require --no-interaction --no-progress 'joomengine/mcp-client:@dev'
+            cd "$GITHUB_WORKSPACE"
+          fi
           node test/joomla-composer.mjs "$client_directory/vendor/bin/joomengine-mcp"

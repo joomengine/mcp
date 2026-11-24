@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectComposerProvider } from '../dist/joomla.js';
 
-// Exercise the actual Packagist launcher over stdio and HTTPS without a permanent site credential.
+// Exercise the actual Composer launcher over stdio and HTTPS without a permanent site credential.
 const launcher = await realpath(process.argv[2]);
 const directory = await mkdtemp(join(tmpdir(), 'joomengine-composer-'));
 const key = join(directory, 'key.pem');
@@ -78,7 +78,7 @@ try {
   await provider.close();
   provider = undefined;
   assert.deepEqual(seen, ['initialize', 'notifications/initialized', 'tools/list', 'tools/call', 'DELETE']);
-  console.log('Released Composer bridge passed named-site discovery, invocation and session cleanup.');
+  console.log('Composer bridge passed named-site discovery, invocation and session cleanup.');
 } finally {
   await provider?.close();
   if (server?.listening) await new Promise(resolve => server.close(resolve));

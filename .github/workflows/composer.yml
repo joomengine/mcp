@@ -1,0 +1,32 @@
+name: Composer bridge
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: curl
+          tools: composer
+          coverage: none
+      - run: npm ci
+      - run: npm run build
+      - name: Exercise the released PHP client over stdio and TLS
+        run: |
+          client_directory="$RUNNER_TEMP/joomengine-php-client"
+          mkdir -p "$client_directory"
+          composer require --no-interaction --no-progress --working-dir="$client_directory" 'joomengine/mcp-client:^1.0'
+          node test/joomla-composer.mjs "$client_directory/vendor/bin/joomengine-mcp"

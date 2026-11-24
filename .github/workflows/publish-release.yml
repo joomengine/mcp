@@ -64,7 +64,7 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: write
@@ -119,24 +119,31 @@ jobs:
             200) test "$(jq -er '.dist.integrity' manifest.json)" = "$integrity" ;;
             *) echo "npm returned HTTP $status for the release manifest" >&2; exit 1 ;;
           esac
-          for attempt in {1..12}; do
-            if curl --fail --silent --show-error "$url" -o manifest.json && jq -e --arg expected "$integrity" '.dist.integrity == $expected' manifest.json >/dev/null; then
-              exit 0
-            fi
-            sleep 5
-          done
-          echo 'Published npm integrity could not be verified.' >&2
-          exit 1
-      - name: Verify the public npm channel and run a clean consumer
+          echo "EXPECTED_INTEGRITY=$integrity" >> "$GITHUB_ENV"
+      - name: Verify npm metadata and install as a clean consumer
         run: |
           channel=latest
           if [[ "$VERSION" == *-* ]]; then channel=next; fi
-          for attempt in {1..12}; do
-            if curl --fail --silent --show-error "https://registry.npmjs.org/@joomengine%2fmcp/$channel" -o channel.json && jq -e --arg version "$VERSION" '.version == $version' channel.json >/dev/null; then
-              break
+          # Check the package index npm install actually uses. First publishes may
+          # reach individual version and channel endpoints several minutes earlier.
+          index='https://registry.npmjs.org/@joomengine%2fmcp'
+          deadline=$((SECONDS + 900))
+          while true; do
+            if curl --fail --silent --show-error --max-time 20 "$index" -o index.json; then
+              actual=$(jq -r --arg version "$VERSION" '.versions[$version].dist.integrity // empty' index.json)
+              if [[ -n "$actual" && "$actual" != "$EXPECTED_INTEGRITY" ]]; then
+                echo "npm integrity differs from the preserved v$VERSION archive" >&2
+                exit 1
+              fi
+              if [[ "$actual" == "$EXPECTED_INTEGRITY" && $(jq -r --arg tag "$channel" '."dist-tags"[$tag]' index.json) == "$VERSION" ]]; then
+                break
+              fi
             fi
-            if [[ "$attempt" == 12 ]]; then echo "npm channel $channel did not resolve to $VERSION" >&2; exit 1; fi
-            sleep 5
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for $channel and integrity of v$VERSION on the public registry" >&2
+              exit 1
+            fi
+            sleep 10
           done
           consumer="$RUNNER_TEMP/registry-consumer"
           npm install --prefix "$consumer" --prefer-online --registry=https://registry.npmjs.org "@joomengine/mcp@$VERSION"

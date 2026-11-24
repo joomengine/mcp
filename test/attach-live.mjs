@@ -9,6 +9,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { attachWorkspace, listWorkspaceTabs } from '../dist/attach.js';
+import { cdpTabs, debuggerAddress, selectedFirefoxTab, selectedTab } from '../dist/attach-discovery.js';
+import { DebugConnection } from '../dist/attach-wire.js';
 import { exerciseWorkspaceSurfaces } from './attach-ui-scenario.mjs';
 
 const mode = process.env.ATTACH_BROWSER || 'chromium';
@@ -94,6 +96,48 @@ async function fixture(t) {
   const port = await listen(server);
   t.after(() => new Promise(resolve => {server.closeAllConnections(); server.close(resolve);}));
   return 'http://127.0.0.1:' + port + '/';
+}
+
+// A failed transition can leave no live Joomla runtime. Read only the owner's sanitized
+// error panel and storage measurements without reopening a site or replaying the operation.
+async function readFailurePanel() {
+  const panel = document.querySelector('#error-view:not([hidden])');
+  const feedback = document.querySelector('#header-feedback:not([hidden])[data-error=true]');
+  const {presentError} = await import(new URL('src/error-presentation.mjs', location.href).href);
+  const secrets = [document.getElementById('admin-password')?.value];
+  const summary = panel?.querySelector('#error-message')?.textContent || feedback?.textContent;
+  const details = panel?.querySelector('#error-diagnostics')?.textContent;
+  const storage = await navigator.storage.estimate();
+  return JSON.stringify({
+    summary: summary && presentError(summary, {secrets}).summary,
+    details: details && presentError(Object.assign(new Error('Playground'), {technicalDetails: details}), {secrets}).details.slice(0, 3000),
+    usageBytes: storage.usage, quotaBytes: storage.quota
+  });
+}
+
+async function reportTransitionFailure(endpoint, base) {
+  const address = new URL(endpoint);
+  const owner = new URL(base);
+  const firefox = address.protocol === 'ws:';
+  const socket = firefox ? address : debuggerAddress(selectedTab(await cdpTabs(address), owner), address);
+  const wire = await DebugConnection.open(socket);
+  let session = false;
+  try {
+    const expression = '(' + readFailurePanel.toString() + ')()';
+    if (firefox) {
+      await wire.request('session.new', {capabilities: {}}, 10000);
+      session = true;
+      const tab = await selectedFirefoxTab(wire, owner);
+      const result = await wire.request('script.evaluate', {expression, target: {context: tab.id}, awaitPromise: true}, 10000);
+      if (result.type === 'success') console.error('Playground owner:', result.result.value);
+    } else {
+      const result = await wire.request('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}, 10000);
+      if (!result.exceptionDetails) console.error('Playground owner:', result.result.value);
+    }
+  } finally {
+    try { if (session) await wire.request('session.end', {}, 5000); }
+    finally { wire.close(); }
+  }
 }
 
 async function exerciseAttachedComponent(endpoint) {
@@ -293,5 +337,11 @@ test('attach to the selected running owner, preserve site and process across dis
   }
   await active.close();
   active = undefined;
-  if (hosted) await exerciseAttachedComponent(endpoint);
+  if (hosted) {
+    try { await exerciseAttachedComponent(endpoint); }
+    catch (error) {
+      await reportTransitionFailure(endpoint, base).catch(() => console.error('Playground owner diagnostics unavailable.'));
+      throw error;
+    }
+  }
 });

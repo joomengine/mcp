@@ -49,7 +49,7 @@ node dist/cli.js
 
 ## Manage a workspace
 
-`workspace_open` starts a deployment in the real Playground dashboard. For a previously saved profile, pass `{"idle":true}`, call `workspace_sites`, and supply a returned `storageKey` to `workspace_resume`. Opening with `{"savedSiteKey":"…"}` resumes a known site directly. A dedicated `JOOMENGINE_PROFILE_DIR` preserves files, database, settings and named backups between MCP processes. Closing an attached connection leaves the user's application running.
+`workspace_open` starts a deployment in the real Playground dashboard. For a previously saved profile, pass `{"idle":true}`, call `workspace_sites`, and supply a returned `storageKey` to `workspace_resume`. Opening with `{"savedSiteKey":"…"}` resumes a known site directly. A dedicated `JOOMENGINE_PROFILE_DIR` preserves files, database, settings and named backups between MCP processes. On stdio disconnect, the server asks the owned browser to save and close. When a supervisor enforces a short shutdown deadline, call `workspace_close` and wait for its acknowledgment before ending the process. Closing an attached connection leaves the user's application running.
 
 Use `workspace_stop`, `workspace_start` and `workspace_restart` for runtime management. Use `workspace_rename` or `workspace_delete` for saved sites. A reset deletes the selected site's data and launches the dashboard's default deployment. Pass the exact ID returned by `workspace_info` to reset. A separately exported complete-site backup can be restored later. The native owner checks pending forms and editor changes during transitions.
 

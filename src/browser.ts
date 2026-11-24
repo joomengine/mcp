@@ -96,7 +96,10 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
   if (options.profileDirectory && !isAbsolute(options.profileDirectory)) throw new Error('JOOMENGINE_PROFILE_DIR must be an absolute, dedicated Chromium profile directory.');
   const settings = { executablePath: options.executablePath, headless: options.headless ?? true };
   const browser = options.profileDirectory ? undefined : await chromium.launch(settings);
-  const context = browser ? await browser.newContext() : await chromium.launchPersistentContext(options.profileDirectory!, settings);
+  // Let the MCP finish its owner save before terminating a persistent Chromium profile.
+  const context = browser ? await browser.newContext() : await chromium.launchPersistentContext(options.profileDirectory!, {
+    ...settings, handleSIGINT: false, handleSIGTERM: false,
+  });
   async function releaseBrowser() { if (browser) await browser.close(); else await context.close(); }
   try {
     const page = context.pages()[0] ?? await context.newPage();

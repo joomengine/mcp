@@ -25,6 +25,16 @@ function dashboardState() {
   if (failure) return { error: failure.slice(0, 250) };
   if (!navigator.serviceWorker?.controller || !crossOriginIsolated ||
     document.documentElement.dataset.playgroundEnvironment !== 'ready') return { phase: 'initializing' };
+  if (!sessionStorage.getItem('desktop-test-recipe')) {
+    // The fixed desktop home first negotiates its own service-worker isolation
+    // URL. Carry its marker into the recipe link after that handshake finishes.
+    const recipe = new URL(location.href);
+    recipe.searchParams.set('deploy', 'jcb-mcp');
+    recipe.searchParams.set('immediate', '1');
+    sessionStorage.setItem('desktop-test-recipe', '1');
+    location.replace(recipe.href);
+    return { phase: 'selecting JCB + MCP' };
+  }
   const frame = get('site-frame');
   if (!frame && !document.hidden) {
     if (get('build-update')?.hidden === false) {
@@ -49,7 +59,6 @@ function dashboardState() {
 
 async function waitForDesktop(endpoint, child) {
   let lastState = 'starting Qt';
-  let selectedRecipe = false;
   const deadline = Date.now() + 12 * 60_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) throw new Error('The desktop process exited during startup.');
@@ -62,14 +71,8 @@ async function waitForDesktop(endpoint, child) {
         && new URL(item.url).pathname === '/');
       if (tab) {
         wire = await DebugConnection.open(new URL(tab.webSocketDebuggerUrl));
-        if (!selectedRecipe) {
-          const navigation = await wire.request('Page.navigate', { url: 'https://playground.joomengine.org/?deploy=jcb-mcp&immediate=1' }, 15000);
-          if (navigation.errorText) throw new Error(navigation.errorText);
-          selectedRecipe = true;
-        } else {
-          const reply = await wire.request('Runtime.evaluate', { expression: '(' + dashboardState + ')()', returnByValue: true }, 8000);
-          state = reply.result?.value;
-        }
+        const reply = await wire.request('Runtime.evaluate', { expression: '(' + dashboardState + ')()', returnByValue: true }, 8000);
+        state = reply.result?.value;
       }
     } catch (error) {
       // A startup navigation can replace this target between discovery and evaluation.

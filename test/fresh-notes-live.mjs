@@ -94,7 +94,13 @@ try {
   assert.match(form.content, /maxlength="120"/);
   const destination = tablePrefix + 'mcpnotebook_note';
   async function saveTitle(title, id = 0) {
-    await call('browser_navigate', { path: admin + '&view=note&layout=edit&id=' + id });
+    // The controller opens the edit session and checks the site's create/edit permissions.
+    const task = id ? '&task=note.edit&id=' + id : '&task=note.add';
+    await call('browser_navigate', { path: admin + task });
+    const page = await call('browser_inspect');
+    assert(page.controls.some(control => /title/i.test(control.label) && control.tag === 'input'),
+      'No visible Note title control at ' + page.path + '. ' + page.text.slice(0, 1800) +
+      ' Controls: ' + page.controls.map(control => control.label).join(', ').slice(0, 1200));
     await call('browser_fill', { selector: 'input[name="jform[title]"]', value: title });
     await call('browser_click', { selector: '#toolbar-apply button,button[data-submit-task="note.apply"],button[task="note.apply"]' });
     for (let i = 0; i < 20; i++) {

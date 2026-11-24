@@ -5,7 +5,7 @@ const tool = (name: string, description: string, properties: Record<string, Sche
 });
 const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_]*$' };
 export const jcbTools = [
-  tool('site_console', 'Run an installed Joomla console command inside the selected Playground runtime. Use ["list","--raw"] to discover available commands or ["help",name] for arguments. Returns the native Joomla output and exit code.', {
+  tool('site_console', 'Run an installed Joomla console command inside the selected Playground runtime. Use ["list"] to discover available commands or ["help",name] for arguments. Returns the native Joomla output and exit code.', {
     argv: { type: 'array', minItems: 1, maxItems: 64, items: { type: 'string' }, description: 'Joomla command name followed by individual arguments.' }
   }, ['argv']),
   tool('jcb_list_components', 'List component IDs, supported Joomla versions and available compilation options from the installed JCB administrator compiler form.'),

@@ -81,9 +81,11 @@ async function fixture(t) {
     const module = modules.get(req.url);
     res.setHeader('Content-Type', module ? 'text/javascript' : 'text/html');
     if (req.url === '/?second=1') return res.end('<title>Secondary owner</title><input id=site-name value="Idle client site">');
+    if (req.url === '/__site/fixture/broken.css') { res.statusCode=404; return res.end(); }
+    if (req.url === '/__site/fixture/verify') return res.end('<link rel="stylesheet" href="broken.css"><script>console.warn("Scoped console warning"); setTimeout(()=>{throw Error("Scoped JS exception")},40)</script><h1>Diagnostic route</h1>');
     if (req.url === '/__site/fixture/') return res.end(`<label>Title<input name="title"></label><input type="checkbox" id="selected">
       <select multiple id="multiple"><option value="first">First</option><option value="second">Second</option></select>
-      <input type="file" id="file" onchange="document.querySelector('p').textContent=this.files[0].name">
+      <input type="file" id="file" hidden accept=".zip" onchange="document.querySelector('p').textContent=this.files[0].name">
       <button id="prompt" onclick="if(confirm('Update this title?')) document.querySelector('p').textContent=prompt('Title','')">Change</button>
       <p></p><iframe title="Editor" id="editor" srcdoc="<body contenteditable=true>Hello</body>"></iframe>`);
     res.end(module ?? owner);
@@ -147,16 +149,23 @@ test('attach to the selected running owner, preserve site and process across dis
 
   let active;
   t.after(async () => { await active?.close().catch(() => {}); });
-  let lastError;
+  let lastError, info;
   const deadline = Date.now() + (hosted ? 9 * 60_000 : 35_000);
   while (Date.now() < deadline) {
     if (startError) throw startError;
     if (child.exitCode !== null || child.signalCode !== null) throw new Error('Browser exited: ' + tail);
-    try { active = await attachWorkspace({endpoint,playgroundUrl:base}); break; }
-    catch (error) { lastError = error; await delay(hosted ? 2000 : 300); }
+    try {
+      active ??= await attachWorkspace({endpoint,playgroundUrl:base});
+      info = await active.call('workspace_info', {});
+      if (info.healthy) break;
+    } catch (error) {
+      lastError = error;
+      await active?.close().catch(() => {});
+      active = undefined;
+    }
+    await delay(hosted ? 2000 : 300);
   }
-  if (!active) throw new Error('Failed to attach to owner: ' + lastError?.message + '\n' + tail);
-  const info = await active.call('workspace_info', {});
+  if (!info?.healthy || !active) throw new Error('Failed to start the selected owner: ' + (lastError?.message ?? info?.phase) + '\n' + tail);
   assert.equal(info.healthy, true);
   if (!hosted) assert.equal(info.workspaceId, 'existing-owner');
   const native = await active.call('native_tools', {});
@@ -186,6 +195,13 @@ test('attach to the selected running owner, preserve site and process across dis
 
     const query = await active.call('browser_inspect',{scope});
     assert(query.controls.some(c => c.label === 'Title' && c.name === 'title'));
+    assert(query.controls.some(c=>c.id==='file' && !c.visible && c.accept==='.zip'));
+    await active.call('browser_click',{scope,selector:'input[name=title]'});
+    await active.call('browser_keyboard',{scope,text:'Replace'});
+    await active.call('browser_keyboard',{scope,key:'a',modifiers:['Control']});
+    await active.call('browser_keyboard',{scope,text:'New title'});
+    const values=await active.call('browser_inspect',{scope,includeValues:true});
+    assert.equal(values.controls.find(c=>c.name==='title').value,'New title');
     await active.call('browser_check',{scope,selector:'#selected',checked:true});
     await active.call('browser_select',{scope,selector:'#multiple',value:['first','second']});
     const controls = (await active.call('browser_inspect',{scope})).controls;
@@ -213,6 +229,19 @@ test('attach to the selected running owner, preserve site and process across dis
     await active.call('browser_keyboard',{scope:'ai',key:'Tab'});
     await assert.rejects(active.call('browser_keyboard',{scope:'site',text:'Wrong surface'}),/Focus a control/);
     await active.call('artifact_release',{id:shot.structuredContent.id});
+    await active.call('browser_diagnostics',{clear:true});
+    await active.call('browser_navigate',{path:'verify'});
+    let diagnostics;
+    for(let attempt=0;attempt<30;attempt++) {
+      diagnostics = await active.call('browser_diagnostics',{});
+      if (diagnostics.errors.some(error=>error.message.includes('Scoped JS exception'))) break;
+      await delay(100);
+    }
+    assert(diagnostics.resources.some(resource=>resource.source==='broken.css' && (resource.status===404 || resource.status===null)));
+    assert(diagnostics.errors.some(error=>error.message.includes('Scoped console warning')));
+    assert(diagnostics.errors.some(error=>error.level==='error' && error.message.includes('Scoped JS exception')));
+    await active.call('browser_navigate',{path:''});
+
     await assert.rejects(active.call('site_restore', {id:saved.id, replaceWorkspaceId:'unrelated-owner'}), /does not match/);
     assert.equal((await active.call('workspace_info', {})).workspaceId, info.workspaceId);
     const restored = await active.call('site_restore', {id:saved.id, replaceWorkspaceId:info.workspaceId});

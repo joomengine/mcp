@@ -2,6 +2,7 @@ import type { Workspace } from './browser.js';
 import { browserHandlerSource } from './browser-router.js';
 import { connectOwner } from './attach-owner.js';
 import { debuggerDialogs, withBrowserDialogs, actionDialogs } from './browser-dialogs.js';
+import { BrowserDiagnostics } from './browser-diagnostics.js';
 import { browserInput, usesNativeInput } from './browser-input.js';
 import { cdpTabs, debuggerAddress, discoverTabs, selectedFirefoxTab, selectedTab } from './attach-discovery.js';
 import { DebugConnection } from './attach-wire.js';
@@ -56,10 +57,12 @@ async function connectCDP(endpoint: URL, base: URL, tabId?: string): Promise<Run
     }))?.value;
     const invoke = (operation: string, args: Record<string, unknown>) => call(browserHandlerSource(operation), [operation, args]);
     const request = wire.request.bind(wire);
+    const diagnostics = new BrowserDiagnostics(request, wire.on.bind(wire));
     const dialogs = debuggerDialogs(request, wire.on.bind(wire));
     return {
       list: () => discoverTabs(endpoint, base),
-      invoke: (operation, args, fn) => withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
+      invoke: (operation, args, fn) => operation === 'browser_diagnostics' ? diagnostics.snapshot(invoke,args)
+        : withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
         ? browserInput(operation, args, invoke, request) : call(fn, [operation, args])),
       async detach() {
         try { await call('function () { this.dispose(); }', []); }
@@ -97,10 +100,12 @@ async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise
       return reply.type === 'undefined' ? undefined : JSON.parse(reply.value);
     };
     const request = wire.request.bind(wire);
+    const diagnostics = new BrowserDiagnostics(request, wire.on.bind(wire), tab.id);
     const dialogs = debuggerDialogs(request, wire.on.bind(wire), tab.id);
     return {
       list: () => discoverTabs(endpoint, base, wire),
-      invoke: (operation, args, fn) => withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
+      invoke: (operation, args, fn) => operation === 'browser_diagnostics' ? diagnostics.snapshot(invoke,args)
+        : withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
         ? browserInput(operation, args, invoke, request, tab.id) : invoke(operation, args, fn)),
       async detach() {
         try { await call('function () { this.dispose(); }', []); }

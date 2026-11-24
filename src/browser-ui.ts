@@ -53,6 +53,17 @@ export const browserTools = [
     ['path']
   ),
   spec(
+    'browser_diagnostics',
+    'Read the current Joomla document’s resource timings and HTTP statuses where available, and start collecting browser warnings and JavaScript errors for this site. Call before navigation or interaction, then again to read the results.',
+    {
+      ...surface,
+      scope: { type: 'string', enum: ['site', 'database'] },
+      clear: { type: 'boolean' },
+      offset: paging,
+      limit: { type: 'integer', minimum: 1, maximum: 250 }
+    }
+  ),
+  spec(
     'browser_inspect',
     'Read the selected surface, visible controls and child frames. Paginate using offset and textOffset. References expire when their document changes.',
     {
@@ -123,8 +134,16 @@ export const browserTools = [
   ),
   spec(
     'browser_pointer',
-    'Click at CSS-pixel coordinates relative to the visible surface from browser_screenshot. Supports the visual editor and the isolated AI panel.',
-    { ...surface, x: paging, y: paging, dialogResponses },
+    'Click, double-click, hover or drag within the visible surface using CSS-pixel coordinates from browser_screenshot.',
+    {
+      ...surface,
+      x: paging,
+      y: paging,
+      action: { type: 'string', enum: ['click', 'doubleClick', 'hover', 'drag'] },
+      toX: paging,
+      toY: paging,
+      dialogResponses
+    },
     ['x', 'y']
   ),
   spec(
@@ -134,22 +153,15 @@ export const browserTools = [
       ...surface,
       dialogResponses,
       text: { type: 'string', minLength: 1, maxLength: 8192 },
+      modifiers: {
+        type: 'array',
+        uniqueItems: true,
+        items: { type: 'string', enum: ['Control', 'Alt', 'Shift', 'Meta'] }
+      },
       key: {
         type: 'string',
-        enum: [
-          'Enter',
-          'Tab',
-          'Escape',
-          'Backspace',
-          'Delete',
-          'ArrowDown',
-          'ArrowUp',
-          'ArrowLeft',
-          'ArrowRight',
-          'Home',
-          'End',
-          'Space'
-        ]
+        pattern:
+          '^(?:[A-Za-z0-9]|F(?:[1-9]|1[0-2])|Enter|Tab|Escape|Backspace|Delete|Arrow(?:Down|Up|Left|Right)|Home|End|Space|PageUp|PageDown|Insert)$'
       }
     }
   )
@@ -349,6 +361,32 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
       };
     throw new Error('Use screenshot, pointer and keyboard on the isolated AI panel.');
   }
+  if (operation === 'browser_diagnostics_view') {
+    const current = new URL(doc.URL);
+    if (!runtime.baseUrl || !isSite(current)) throw new Error('Open the Joomla site or database document first.');
+    const entries = doc.defaultView!.performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    const offset = Number(args.offset ?? 0),
+      end = Math.min(entries.length, offset + Number(args.limit ?? 100));
+    const resources = entries.slice(offset, end).map((entry) => {
+      const url = new URL(entry.name, current);
+      const sameSite = isSite(url);
+      return {
+        source: sameSite ? url.pathname.slice(root.pathname.length) : url.origin,
+        sameSite,
+        kind: entry.initiatorType,
+        status: entry.responseStatus || null,
+        durationMs: Math.round(entry.duration),
+        transferBytes: entry.transferSize
+      };
+    });
+    return {
+      base: root.href,
+      path: current.pathname.slice(root.pathname.length),
+      resources,
+      totalResources: entries.length,
+      nextOffset: end < entries.length ? end : null
+    };
+  }
   if (operation === 'browser_inspect') {
     const controls = state(doc),
       offset = Number(args.offset ?? 0),
@@ -357,7 +395,7 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
       ...doc.querySelectorAll<HTMLElement>(
         'a[href],button,input:not([type=hidden]),select,textarea,iframe,summary,[role=button],[role=tab],[role=menuitem],[contenteditable]:not([contenteditable=false])'
       )
-    ].filter(visible);
+    ].filter(node => visible(node) || node.matches('input[type=file]'));
     const content = doc.body?.innerText || '',
       maxText = 6000;
     const entries = nodes.slice(offset, offset + 80).map((node) => {
@@ -391,6 +429,7 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
         name: node.getAttribute('name') || undefined,
         label: name.trim().slice(0, 180),
         ...(showValue ? { value: control.value.slice(0, 2000), valueLength: control.value.length } : {}),
+        ...(node.matches('input[type=file]') ? {visible: visible(node), multiple:control.multiple, accept:control.accept} : {}),
         disabled: node.matches(':disabled,[aria-disabled=true]'),
         ...(['checkbox', 'radio'].includes(type ?? '') ? { checked: control.checked } : {}),
         ...(node.localName === 'select'
@@ -416,7 +455,8 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
     };
   }
   const node = lookup(doc, String(args.selector));
-  if (!node?.isConnected || !visible(node) || node.matches(':disabled,[aria-disabled=true]'))
+  const upload = operation === 'browser_upload' && node?.matches('input[type=file]');
+  if (!node?.isConnected || (!visible(node) && !upload) || node.matches(':disabled,[aria-disabled=true]'))
     throw new Error('This control is absent, hidden or disabled. Inspect the current page.');
   const view = doc.defaultView!;
   const changed = () => {

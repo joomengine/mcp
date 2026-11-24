@@ -14,6 +14,9 @@ const keys: Record<string, [string, number, string]> = {
   ArrowRight: ['ArrowRight', 39, '\uE014'],
   Home: ['Home', 36, '\uE011'],
   End: ['End', 35, '\uE010'],
+  PageUp: ['PageUp', 33, '\uE00E'],
+  PageDown: ['PageDown', 34, '\uE00F'],
+  Insert: ['Insert', 45, '\uE016'],
   Space: [' ', 32, '\uE00D']
 };
 
@@ -107,49 +110,104 @@ export async function browserInput(
   }
   if (name === 'browser_pointer') {
     const x = region.x + args.x,
-      y = region.y + args.y;
+      y = region.y + args.y,
+      action = args.action ?? 'click';
+    let end: { x: number; y: number } | undefined;
+    if (action === 'drag') {
+      if (!Number.isInteger(args.toX) || !Number.isInteger(args.toY))
+        throw new Error('A drag requires toX and toY.');
+      const hit = await invoke('browser_region', { ...args, x: args.toX, y: args.toY });
+      end = { x: hit.x + args.toX, y: hit.y + args.toY };
+    }
+    const clicks = action === 'doubleClick' ? 2 : 1;
     if (firefoxContext) {
+      const actions: Array<Record<string, unknown>> = [{ type: 'pointerMove', origin: 'viewport', x, y }];
+      if (action !== 'hover')
+        for (let i = 0; i < clicks; i++) {
+          actions.push({ type: 'pointerDown', button: 0 });
+          if (end) actions.push({ type: 'pointerMove', origin: 'viewport', ...end, duration: 220 });
+          actions.push({ type: 'pointerUp', button: 0 });
+        }
       await request('input.performActions', {
         context: firefoxContext,
-        actions: [
-          {
-            type: 'pointer',
-            id: 'je-pointer',
-            parameters: { pointerType: 'mouse' },
-            actions: [
-              { type: 'pointerMove', origin: 'viewport', x, y },
-              { type: 'pointerDown', button: 0 },
-              { type: 'pointerUp', button: 0 }
-            ]
-          }
-        ]
+        actions: [{ type: 'pointer', id: 'je-pointer', parameters: { pointerType: 'mouse' }, actions }]
       });
     } else {
-      await request('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
-      await request('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+      await request('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      if (action !== 'hover')
+        for (let clickCount = 1; clickCount <= clicks; clickCount++) {
+          await request('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount });
+          try {
+            if (end)
+              for (let step = 1; step <= 8; step++) {
+                await request('Input.dispatchMouseEvent', {
+                  type: 'mouseMoved',
+                  button: 'left',
+                  buttons: 1,
+                  x: x + ((end.x - x) * step) / 8,
+                  y: y + ((end.y - y) * step) / 8
+                });
+              }
+          } finally {
+            await request('Input.dispatchMouseEvent', {
+              type: 'mouseReleased',
+              ...(end ?? { x, y }),
+              button: 'left',
+              clickCount
+            });
+          }
+        }
     }
     return { applied: true };
   }
   if ((args.key === undefined) === (args.text === undefined)) throw new Error('Provide either one key or text.');
+  const modifiers = (args.modifiers ?? []) as string[];
+  if (args.text && modifiers.length) throw new Error('Use modifiers with a named key.');
+  const flags: Record<string, [number, string, number]> = {
+    Alt: [1, '\uE00A', 18],
+    Control: [2, '\uE009', 17],
+    Meta: [4, '\uE03D', 91],
+    Shift: [8, '\uE008', 16]
+  };
+  let selected: [string, number, string] | undefined;
+  if (args.key) {
+    const value = String(args.key),
+      fn = /^F([1-9]|1[0-2])$/.exec(value);
+    selected =
+      keys[value] ?? (fn ? [value, 111 + Number(fn[1]), String.fromCharCode(0xe030 + Number(fn[1]))] : undefined);
+    if (!selected && /^[A-Za-z0-9]$/.test(value)) selected = [value, value.toUpperCase().charCodeAt(0), value];
+    if (!selected || modifiers.some((m) => !flags[m])) throw new Error('Unsupported keyboard key or modifier.');
+  }
   if (firefoxContext) {
-    const chars: string[] = args.key ? [keys[args.key]![2]] : Array.from(args.text as string);
+    const chars: string[] = selected ? [selected[2]] : Array.from(args.text as string);
     for (let offset = 0; offset < chars.length; offset += 100) {
-      const actions = chars.slice(offset, offset + 100).flatMap((value) => [
-        { type: 'keyDown', value },
-        { type: 'keyUp', value }
-      ]);
+      const actions = [
+        ...modifiers.map((m) => ({ type: 'keyDown', value: flags[m]![1] })),
+        ...chars.slice(offset, offset + 100).flatMap((value) => [
+          { type: 'keyDown', value },
+          { type: 'keyUp', value }
+        ]),
+        ...[...modifiers].reverse().map((m) => ({ type: 'keyUp', value: flags[m]![1] }))
+      ];
       await request('input.performActions', {
         context: firefoxContext,
         actions: [{ type: 'key', id: 'je-keyboard', actions }]
       });
     }
-  } else if (args.key) {
-    const [key, windowsVirtualKeyCode] = keys[args.key]!;
-    const event = { key, code: args.key, windowsVirtualKeyCode };
+  } else if (selected) {
+    const [key, windowsVirtualKeyCode] = selected;
+    const code = /^[0-9]$/.test(key)
+      ? 'Digit' + key
+      : /^[A-Za-z]$/.test(key)
+        ? 'Key' + key.toUpperCase()
+        : args.key;
+    const mask = modifiers.reduce((sum, m) => sum | flags[m]![0], 0);
+    const event = { key, code, windowsVirtualKeyCode, modifiers: mask };
+    const value = key === 'Enter' ? '\r' : key.length === 1 ? key : '';
     await request('Input.dispatchKeyEvent', {
       type: 'keyDown',
       ...event,
-      ...(args.key === 'Enter' ? { text: '\r' } : args.key === 'Space' ? { text: ' ' } : {})
+      ...(value && !(mask & 7) ? { text: value } : {})
     });
     await request('Input.dispatchKeyEvent', { type: 'keyUp', ...event });
   } else await request('Input.insertText', { text: args.text });

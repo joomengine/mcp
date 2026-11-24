@@ -43,7 +43,7 @@ try {
     assert(protocol.serverInfo.name && protocol.capabilities.tools && protocol.capabilities.resources);
     const resources = await call('provider_resources', { provider: 'joomla' });
     assert(resources.resources.some(entry => entry.uri === 'joomla://catalog/core'));
-    const consoleOutput = await call('site_console', { argv: ['list', '--raw'] });
+    const consoleOutput = await call('site_console', { argv: ['list'] });
     assert.equal(consoleOutput.exitCode, 0);
     assert.match(consoleOutput.output, /cache:clean/);
     if (deployId === 'blank') {

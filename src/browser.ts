@@ -1,7 +1,8 @@
-import { chromium, type JSHandle, type Page } from 'playwright';
 import { connectOwner } from './attach-owner.js';
 import { isAbsolute } from 'node:path';
+import { chromium, type JSHandle, type Page, type CDPSession } from 'playwright';
 import { withBrowserDialogs, actionDialogs } from './browser-dialogs.js';
+import { BrowserDiagnostics } from './browser-diagnostics.js';
 import { browserInput, usesNativeInput } from './browser-input.js';
 import { browserHandlerSource } from './browser-router.js';
 import { playgroundBase } from './browser-catalog.js';
@@ -27,6 +28,8 @@ export interface CloudOptions {
 export async function workspaceFromHandle(page: Page, owner: JSHandle, release: () => Promise<void>): Promise<Workspace> {
   const handlers = new Map<string, Promise<JSHandle>>();
   let closed: Promise<void> | undefined;
+  let diagnostics: BrowserDiagnostics | undefined;
+  let observer: CDPSession | undefined;
   async function invoke(operation: string, args: Record<string, unknown>): Promise<any> {
     const source = browserHandlerSource(operation);
     let handle = handlers.get(source);
@@ -41,6 +44,19 @@ export async function workspaceFromHandle(page: Page, owner: JSHandle, release: 
   return {
     async call(operation, args) {
       if (closed) throw new Error('This browser workspace is closed.');
+      if (operation === 'browser_diagnostics') {
+        observer ??= await page.context().newCDPSession(page);
+        const protocol = observer;
+        diagnostics ??= new BrowserDiagnostics(
+          (name, params) => protocol.send(name as Parameters<typeof protocol.send>[0], params as never),
+          (name, callback) => {
+            const event = name as Parameters<typeof protocol.on>[0];
+            protocol.on(event, callback);
+            return () => { protocol.off(event, callback); };
+          }
+        );
+        return diagnostics.snapshot(invoke,args);
+      }
       return withBrowserDialogs(actionDialogs(operation, args), async notify => {
         const listener = (dialog: import('playwright').Dialog) => notify({
           type: dialog.type(), message: dialog.message(),
@@ -59,7 +75,7 @@ export async function workspaceFromHandle(page: Page, owner: JSHandle, release: 
     },
     close() {
       return closed ??= (async () => {
-        try { await release(); }
+        try { await observer?.detach().catch(() => {}); await release(); }
         finally { await Promise.allSettled([owner.dispose(), ...[...handlers.values()].map(async handle => (await handle).dispose())]); }
       })();
     },
@@ -96,7 +112,11 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
       return typeof shell.getOwnerWorkspace === 'function';
     }, base.href);
     if (ownerAPI) {
-      const input = { ...options.input };
+      const input = {
+        ...(options.deployId === undefined ? {} : { deployId: options.deployId }),
+        ...(options.configuration === undefined ? {} : { configuration: options.configuration }),
+        ...options.input,
+      } as Record<string, unknown>;
       if (input.idle && Object.keys(input).some(key => key !== 'idle') ||
         input.savedSiteKey && Object.keys(input).some(key => key !== 'savedSiteKey')) {
         throw new Error('Choose a fresh deployment, an idle dashboard or one savedSiteKey.');
@@ -116,7 +136,7 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
         await owner.perform('open', input);
       }, {base: base.href, input: input as Record<string, any>}), 15 * 60_000, 'Timed out opening the Playground site.');
       const owner = await page.evaluateHandle('(' + connectOwner.toString() + ')(' + JSON.stringify(base.href) + ',' +
-        JSON.stringify(!input.idle && !input.savedSiteKey && !options.profileDirectory) + ')');
+        JSON.stringify(input.idle || input.savedSiteKey ? 'existing' : 'fresh') + ')');
       return await workspaceFromHandle(page, owner, async () => {
         try {
           if (options.profileDirectory) await owner.evaluate(async (connection: any) => {

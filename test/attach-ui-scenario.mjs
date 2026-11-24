@@ -14,15 +14,11 @@ export async function exerciseWorkspaceSurfaces(call) {
 
   await call('browser_click', { ...shell, selector: '#code-button' });
   await call('browser_inspect', { scope: 'code', waitForSelector: 'body', timeoutMs: 120000 });
-  await call('browser_inspect', {
-    ...shell,
-    waitForSelector: 'button[data-i18n="code.ai"]:enabled',
-    timeoutMs: 120000
-  });
-  await call('browser_click', { ...shell, selector: 'button[data-i18n="code.ai"]' });
+  await call('browser_inspect', { ...shell, waitForSelector: '#code-button:enabled', timeoutMs: 120000 });
+  await call('browser_click', { ...shell, selector: 'button[data-i18n-aria-label="code.ai"]' });
   await call('browser_inspect', { ...shell, waitForSelector: 'iframe.jec-ai-frame', timeoutMs: 60000 });
   assert.equal((await call('browser_inspect', { scope: 'ai' })).isolated, true);
-  await call('browser_click', { ...shell, selector: 'button[data-i18n="code.ai"]' });
+  await call('browser_click', { ...shell, selector: 'button[data-i18n-aria-label="code.ai"]' });
   await call('browser_inspect', { ...shell, waitForSelector: '#code-button:enabled' });
   await call('browser_click', { ...shell, selector: '#code-button:enabled' });
 

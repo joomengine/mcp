@@ -10,11 +10,16 @@
 
 ## Start from this checkout
 
-Node.js 22.16 or later, npm, Git, and a browser host with Playwright's Chromium dependencies are required for the cloud path. On Linux the Playwright install command can install system dependencies.
+Use Node.js 22.16 or later, npm and Git on the machine that will host the agent's browser. On Linux the Playwright install command can install system dependencies.
 
 ```sh
 git clone https://github.com/joomengine/mcp.git
 cd mcp
+```
+
+When testing a pull request, check out its branch here. For PR #1, run `git fetch origin pull/1/head && git switch --detach FETCH_HEAD`. Then build the checked-out version:
+
+```sh
 npm ci
 npm run skills
 npm run build
@@ -24,7 +29,20 @@ export JOOMENGINE_ARTIFACT_DIR="$PWD/artifacts"
 node dist/cli.js
 ```
 
-Before this branch is merged, check out `feature/playground-agent-workspaces` after cloning. The final command starts the stdio server. For an MCP client configuration, use `node` as the command and the absolute path printed by `realpath dist/cli.js` as its only argument. Pass `JOOMENGINE_ARTIFACT_DIR` through the MCP client's environment settings if the client starts from another shell. A prebuilt npm tarball is produced by the package verification workflow. After installing that archive, use the `joomengine-playground-mcp` executable.
+The final command starts the stdio server. For an MCP client configuration, use `node` as the command and the absolute path printed by `realpath dist/cli.js` as its only argument. Pass `JOOMENGINE_ARTIFACT_DIR` through the MCP client's environment settings if the client starts from another shell.
+
+Alternatively, install the npm tarball built by the package verification workflow, or run `npm link` in the built checkout. Clients supporting the common `mcpServers` format can then launch the linked or installed executable from their PATH:
+
+```json
+{
+  "mcpServers": {
+    "joomengine": {
+      "command": "joomengine-playground-mcp",
+      "args": []
+    }
+  }
+}
+```
 
 ## Build a component
 

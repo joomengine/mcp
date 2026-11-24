@@ -12,7 +12,7 @@ Open a Playground site with `workspace_open` or select a running client workspac
 
 Select `joomla` for the embedded TypeScript provider, `native` for the installed Joomla site package, or `composer` for the configured remote site. Start with `provider_info({"provider":"native"})` to read that server's identity, instructions and negotiated capabilities. `provider_resources`, `provider_resource_templates` and `provider_prompts` list the provider's advertised entries. Follow each returned `nextCursor` on that same provider. Pass a discovered URI to `provider_resource` or a prompt name and its string arguments to `provider_prompt`. Resources retain their MIME type and text or base64 body. The bundled Skills remain available through `skills_read` even before connecting to a site.
 
-Opening the native site MCP creates one session for discovery, grants, plans and execution. Closing or replacing the workspace ends this session. Each browser attachment has its own session. The Composer bridge keeps its remote connection independent of the browser workspace.
+Opening the native site MCP creates one session for discovery, grants, plans and execution. Closing or replacing the workspace ends this session. Each browser attachment has its own session. If the site expires a session or rotates its token, the interrupted call reports its HTTP error. The next call starts a new session. Read the affected records and acquire new grants or plans before applying further changes. The Composer bridge keeps its remote connection independent of the browser workspace.
 
 ## Joomla Web Services from Playground
 

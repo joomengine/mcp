@@ -3,9 +3,8 @@ import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The build resolves main once. Installed MCP servers only read the packaged checkout.
+// Resolve the canonical default branch once. Record the exact offline fallback in the package.
 const repository = 'https://github.com/joomengine/skills.git';
-const branch = 'main';
 const project = fileURLToPath(new URL('../', import.meta.url));
 const stage = await mkdtemp(join(project, '.skills-build-'));
 const checkout = join(stage, 'joomengine-jcb');
@@ -15,8 +14,9 @@ let replaced = false;
 
 try {
   execFileSync('git', ['-c', 'core.autocrlf=false', 'clone', '--depth=1', '--single-branch', '--no-tags',
-    '--branch', branch, '--', repository, checkout], { stdio: 'inherit' });
+    '--', repository, checkout], { stdio: 'inherit' });
   const git = (...args) => execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8' });
+  const branch = git('branch', '--show-current').trim();
   const revision = git('rev-parse', 'HEAD').trim();
   const files = git('ls-files', '--stage', '-z').split('\0').filter(Boolean).map(entry => {
     const separator = entry.indexOf('\t');

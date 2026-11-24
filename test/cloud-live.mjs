@@ -1,5 +1,6 @@
 // Run against the published Playground or the trusted URL configured for this CLI.
 import assert from 'node:assert/strict';
+import { exerciseDeployment, exerciseDeploymentLaunch } from './deployment-scenario.mjs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -29,6 +30,8 @@ try {
   assert(catalogue.joomla.some(r => r.version === catalogue.defaults.joomlaVersion));
   assert(catalogue.recipes.some(r => r.id === 'blank'));
   assert(catalogue.recipes.some(r => r.id === 'jcb-mcp'));
+  const schema = await call('deployment_schema');
+  assert(schema.sections.includes('overlay'));
   for (const deployId of deployments) {
     assert(['blank', 'jcb-mcp'].includes(deployId));
     console.log('Provisioning ' + deployId);
@@ -44,6 +47,7 @@ try {
     assert.equal(consoleOutput.exitCode, 0);
     assert.match(consoleOutput.output, /cache:clean/);
     if (deployId === 'blank') {
+      await exerciseDeployment(call);
       const result = await call('joomla_call', { name: 'joomla_action_read',
         arguments: { action: 'content.categories.list', transport: 'api', input: { limit: 1 } } });
       assert.match(JSON.stringify(result), /[Uu]ncategorised/);
@@ -91,6 +95,7 @@ try {
     await call('browser_select', { selector: '#p', value: 'Two' });
     await call('browser_click', { selector: '#check' });
     assert.match((await call('browser_inspect')).text, /VerifiedTwo/);
+    if (deployId === 'blank') await exerciseDeploymentLaunch(call);
     await call('workspace_close');
     console.log('Passed ' + deployId + ' workspace, browser controls and live Joomla read.');
   }

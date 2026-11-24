@@ -1,0 +1,37 @@
+name: Verify canonical Skills synchronization
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 */6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/checkout@v4
+        with:
+          repository: joomengine/skills
+          path: canonical
+          persist-credentials: false
+      - run: npm ci
+      - name: Compare every candidate resource and registered skill with upstream Git
+        if: github.event_name == 'pull_request'
+        run: |
+          npm run skills
+          npm run build
+          node test/skills-sync-live.mjs "$PWD/dist/cli.js" "$PWD/canonical"
+      - name: Verify the currently published npm server follows the upstream default branch
+        if: github.event_name != 'pull_request'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/consumer" --registry=https://registry.npmjs.org @joomengine/mcp@latest
+          node test/skills-sync-live.mjs "$RUNNER_TEMP/consumer/node_modules/@joomengine/mcp/dist/cli.js" "$PWD/canonical"

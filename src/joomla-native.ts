@@ -22,9 +22,12 @@ export async function nativeDispatch(runtime: any, operation: string, args: Reco
     const index = site.pathname.indexOf('/__site/');
     if (index < 0 || site.origin !== location.origin) throw new Error('Invalid Playground site address.');
     const { createMcpClient } = await import(new URL(site.pathname.slice(0, index + 1) + 'src/mcp.mjs', site.origin).href);
-    const request = (path: string, init: RequestInit) => {
+    const request = async (path: string, init: RequestInit) => {
       if (runtime.closed || runtime.workspace?.id !== workspaceId || runtime.baseUrl !== siteUrl) throw new Error('The active Joomla site changed.');
-      return runtime.request(path, init);
+      const response: Response = await runtime.request(path, init);
+      // A rotated token or expired server session requires a new handshake. Never replay the operation.
+      if (state && state === runtime[key] && [401, 404, 410].includes(response.status)) delete runtime[key];
+      return response;
     };
     const client = createMcpClient({ request, token: conn.token });
     try {

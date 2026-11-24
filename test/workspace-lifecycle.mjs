@@ -46,8 +46,8 @@ try {
   await call('workspace_resume', {storageKey:record.storageKey});
   assert.equal((await call('file_read',{path:'/owner-marker.txt'})).content,'survives reopening');
   const latest = await call('workspace_info');
-  const next = await call('deployment_launch', {deployId:'blank',replaceWorkspaceId:latest.workspaceId,
-    configuration:{siteName:'Second workspace'}});
+  const next = await call('deployment_launch', {replaceWorkspaceId:latest.workspaceId,
+    source:{ deployId:'blank', configuration:{siteName:'Second workspace'} }});
   assert.notEqual((await call('workspace_info')).workspaceId,latest.workspaceId);
   assert((await call('workspace_sites')).sites.some(s=>s.storageKey===record.storageKey));
   assert((await call('workspace_delete',{storageKey:record.storageKey})).deleted);

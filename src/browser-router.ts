@@ -1,3 +1,4 @@
+import { deploymentDispatch } from './deployment.js';
 import { browserUiDispatch } from './browser-ui.js';
 import { jcbDispatch } from './jcb.js';
 import { nativeDispatch } from './joomla-native.js';
@@ -9,6 +10,7 @@ import { dispatch } from './runtime.js';
 export function browserHandlerSource(operation: string): string {
   const handler = lifecycleTools.some(tool => tool.name === operation) ? workspaceLifecycle : operation === 'joomla.api' ? joomlaApi
     : operation.startsWith('native_') ? nativeDispatch
+    : operation.startsWith('deployment_') ? deploymentDispatch
     : operation.startsWith('browser_') ? browserUiDispatch
     : operation === 'site_console' || operation.startsWith('jcb_') || operation === 'extension_install' || operation === 'extension_enable_plugin' ? jcbDispatch : dispatch;
   const parameters = handler === joomlaApi ? 'this, args' : 'this, op, args';

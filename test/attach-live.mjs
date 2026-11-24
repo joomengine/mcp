@@ -33,6 +33,7 @@ async function fixture(t) {
     import { t } from './src/i18n.mjs';
     window.addEventListener('message',event=>{ if(event.source===document.querySelector('.jec-ai-frame').contentWindow && event.data===1) document.getElementById('ai-proof').textContent='Visual AI action received'; });
     const files = new Map();
+    let nativeSessions = 0;
     const runtime = {
       workspace: { id: 'existing-owner', root: '/', subscribe: () => () => {},
         async request(op, { path, bytes, expectedRevision }) {
@@ -55,8 +56,13 @@ async function fixture(t) {
         if (init.method === 'DELETE') return new Response(null, {status:204});
         const rpc = JSON.parse(init.body);
         if (!rpc.id) return new Response(null,{status:202});
-        const result = rpc.method === 'initialize' ? {protocolVersion:'2025-11-25'} : {tools:[{name:'fixture-site'}]};
-        return Response.json({jsonrpc:'2.0', id:rpc.id, result},{headers:{'Mcp-Session-Id':'fixture-session'}});
+        if (rpc.method === 'initialize') nativeSessions++;
+        const session = 'fixture-session-' + nativeSessions;
+        if (rpc.method !== 'initialize' && (new Headers(init.headers).get('Mcp-Session-Id') !== session || rpc.params?.name === 'expire-session')) {
+          return new Response(null, {status:404});
+        }
+        const result = rpc.method === 'initialize' ? {protocolVersion:'2025-11-25',serverInfo:{name:'fixture',version:String(nativeSessions)}} : {tools:[{name:'fixture-site'}]};
+        return Response.json({jsonrpc:'2.0', id:rpc.id, result},{headers:{'Mcp-Session-Id':session}});
       },
     };
     const host = createRuntimeViewHost({getRuntime: () => runtime, baseURL: location.origin + '/'});
@@ -147,6 +153,12 @@ test('attach to the selected running owner, preserve site and process across dis
   if (!hosted) assert.equal(info.workspaceId, 'existing-owner');
   const native = await active.call('native_tools', {});
   assert.ok(native.tools.length, 'The in-page native MCP session must preserve its authentication headers.');
+  if (!hosted) {
+    const before = await active.call('native_info', {});
+    await assert.rejects(active.call('native_call', {name:'expire-session'}), /HTTP 404/);
+    const after = await active.call('native_info', {});
+    assert.equal(Number(after.serverInfo.version), Number(before.serverInfo.version) + 1, 'An expired server session triggers a new handshake.');
+  }
   const target = '/tmp/mcp-attach-' + crypto.randomUUID() + '.txt';
   const content = 'one existing owner: ' + crypto.randomUUID();
   await active.call('file_write', {path:target, content, expectedRevision:null});

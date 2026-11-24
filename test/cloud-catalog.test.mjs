@@ -8,7 +8,8 @@ test('list deployed recipes and compatible releases without launching Chromium',
   const files = {
     'assets/manifest.json': { sourceCommit: 'test', defaults: { phpVersion: '8.4', joomlaVersion: '6.2.0' },
       php, joomla: [{ version: '6.2.0', php: ['8.3', '8.4'] }] },
-    'deploys/catalog.json': { deploys: [{ id: 'blank', title: 'Joomla only', joomla: ['6'], requirements: { jcb: 'optional' } }] },
+    'deploys/catalog.json': { deploys: [{ id: 'blank', title: 'Joomla only', joomla: ['6'], file: './blank.json', requirements: { jcb: 'optional' } }] },
+    'deploys/blank.json': { id: 'blank', configuration: { siteName: 'Joomla only' } },
     'assets/version-catalog.json': { generatedAt: '2026-11-24T00:00:00Z', joomla: [
       { version: '6.2.1', channel: 'stable', phpMinimum: '8.3.8' }, { version: '7.0.0-dev', channel: 'nightly', phpMinimum: '8.5.0' }
     ], jcb: [{ version: '6.2.1', channel: 'stable' }] }
@@ -24,5 +25,9 @@ test('list deployed recipes and compatible releases without launching Chromium',
     assert.deepEqual(result.joomla, [{ version: '6.2.1', channel: 'stable', php: ['8.4'] }]);
     assert.deepEqual(result.stagedJoomla[0], { version: '6.2.0', php: ['8.3', '8.4'] });
     assert.equal(result.recipes[0].id, 'blank');
+    const baseURL = 'http://127.0.0.1:' + server.address().port + '/demo';
+    const builtIn = await getDeploymentCatalog({ baseURL, deployId: 'blank' });
+    assert.equal(builtIn.manifest.configuration.siteName, 'Joomla only');
+    await assert.rejects(getDeploymentCatalog({ baseURL, deployId: 'missing' }), /Unknown built-in/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

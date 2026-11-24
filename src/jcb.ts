@@ -91,6 +91,16 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
   const selected = components.find(item => item.id === args.componentId);
   const major = Number(args.joomlaMajor ?? String(runtime.configuration.joomlaVersion).split('.')[0]);
   if (!component || !version || !selected || !versions.includes(major)) throw new Error('Choose a component ID and target Joomla major from jcb_list_components.');
+  const previousTimes = new Map<string, string>();
+  for (const link of compiler.doc.querySelectorAll<HTMLAnchorElement>('.com-componentbuilder-compiler-success a[href]')) {
+    const url = new URL(link.getAttribute('href')!, compiler.url);
+    if (!url.pathname.toLowerCase().endsWith('.zip')) continue;
+    const path = localPath(url);
+    if (/^tmp\/[A-Za-z0-9_.-]+\.zip$/i.test(path)) {
+      const stat = await runtime.fs.stat(runtime.documentRoot + '/' + path);
+      if (stat?.isFile) previousTimes.set(path, stat.mtime);
+    }
+  }
   const data = new URLSearchParams();
   for (const [key, value] of new FormData(form)) if (typeof value === 'string') data.append(key, value);
   if (![...data].some(([k, v]) => /^[a-f0-9]{32}$/i.test(k) && v === '1')) throw new Error('JCB did not supply the Joomla session form token.');
@@ -111,7 +121,11 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
     const path = localPath(url);
     if (!/^tmp\/[A-Za-z0-9_.-]+\.zip$/i.test(path) || paths.has(path)) continue;
     paths.add(path);
-    const bytes = new Uint8Array(await runtime.fs.readFile(`${runtime.documentRoot}/${path}`));
+    const filename = runtime.documentRoot + '/' + path;
+    if (previousTimes.has(path) && (await runtime.fs.stat(filename))?.mtime === previousTimes.get(path)) {
+      throw new Error('JCB returned an installer from an earlier compilation. Inspect the compiler messages.');
+    }
+    const bytes = new Uint8Array(await runtime.fs.readFile(filename));
     if (bytes.length < 22 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 3 || bytes[3] !== 4) throw new Error('JCB returned an invalid installer ZIP.');
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
     packages.push({ path: '/' + path, filename: path.split('/').pop()!, size: bytes.length, sha256: [...digest].map(n => n.toString(16).padStart(2, '0')).join('') });

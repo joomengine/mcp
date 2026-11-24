@@ -1,0 +1,41 @@
+name: Desktop MCP integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: JCB in JoomEngine Desktop (Qt WebEngine)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/checkout@v4
+        with:
+          repository: joomengine/joomengine
+          path: desktop
+          persist-credentials: false
+      - name: Build the desktop release executable
+        working-directory: desktop
+        run: |
+          .github/scripts/install-linux-build-deps.sh qt6-base-dev qt6-webengine-dev libqt6webenginecore6-bin qt6-qpa-plugins dbus-x11
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target joomengine --parallel
+      - name: Attach to the hosted JCB site in the running desktop app
+        run: dbus-run-session -- xvfb-run -a node test/desktop-live.mjs desktop/build/joomengine

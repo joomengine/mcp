@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { attachWorkspace } from '../dist/attach.js';
 
 const mode = process.env.ATTACH_BROWSER || 'chromium';
-const hosted = process.env.ATTACH_HOSTED === '1' || mode === 'desktop';
+const hosted = process.env.ATTACH_HOSTED === '1';
 
 async function listen(server) {
   server.listen(0, '127.0.0.1');
@@ -54,27 +54,18 @@ async function fixture(t) {
 }
 
 test('attach to the selected running owner, preserve site and process across disconnect', {timeout: 12 * 60_000}, async t => {
-  if (!['chromium', 'firefox', 'desktop'].includes(mode)) throw new Error('Unknown ATTACH_BROWSER.');
-  const executable = process.env.ATTACH_EXECUTABLE || (mode === 'desktop' ? 'joomengine' : mode);
+  if (!['chromium', 'firefox'].includes(mode)) throw new Error('Unknown ATTACH_BROWSER.');
+  const executable = process.env.ATTACH_EXECUTABLE || mode;
   const base = hosted ? 'https://playground.joomengine.org/' : await fixture(t);
   const profile = await mkdtemp(path.join(tmpdir(), 'joomengine-attach-'));
   const portProbe = createServer();
   const port = await listen(portProbe);
   await new Promise(resolve => portProbe.close(resolve));
   const endpoint = mode === 'firefox' ? 'ws://127.0.0.1:' + port + '/session' : 'http://127.0.0.1:' + port;
-  const args = mode === 'desktop' ? [] :
-    mode === 'firefox' ? ['--headless','--no-remote','--profile',profile,'--remote-debugging-port',String(port),base] :
+  const args = mode === 'firefox' ? ['--headless','--no-remote','--profile',profile,'--remote-debugging-port',String(port),base] :
     ['--headless','--disable-gpu','--no-first-run','--disable-dev-shm-usage','--remote-debugging-address=127.0.0.1',
       '--remote-debugging-port=' + port,'--user-data-dir=' + profile, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),base];
-  const env = { ...process.env };
-  if (mode === 'desktop') {
-    for (const [key, dir] of [['XDG_DATA_HOME','data'],['XDG_CACHE_HOME','cache'],['XDG_CONFIG_HOME','config']]) {
-      env[key] = path.join(profile,dir);
-      await mkdir(env[key], {recursive: true});
-    }
-    env.QTWEBENGINE_REMOTE_DEBUGGING = '127.0.0.1:' + port;
-  }
-  const child = spawn(executable, args, { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   let tail = '';
   let startError;
   child.on('error', error => { startError = error; });

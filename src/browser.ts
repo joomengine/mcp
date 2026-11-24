@@ -95,10 +95,10 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
         });
       }
       await mountPreview(current.url);
-      function wire(site: any) {
+      function wire(site: any, fresh: boolean) {
         site.agentFrame = frame;
         site.agentModuleBase = base;
-        site.agentOwned = true;
+        site.agentOwned = fresh;
         site.agentCurrent = () => current;
         site.agentRestore = async (bytes: Uint8Array) => {
           const { readSiteExport, configurationForSiteExport } = await load('src/site-import.mjs');
@@ -108,7 +108,7 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
           // imported one has successfully booted with the archive's own files/database.
           settings.persistence = false;
           const next = await createPlayground(settings, { siteExport });
-          wire(next);
+          wire(next, false);
           const previous = current;
           const artifacts = Symbol.for('joomengine.mcp.artifacts');
           next[artifacts] = previous[artifacts];
@@ -118,7 +118,7 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
           return { restored: true, sha256: siteExport.sha256, siteName: settings.siteName, joomlaVersion: settings.joomlaVersion };
         };
       }
-      wire(current);
+      wire(current, true);
       return current;
     }, { base: base.href, deployId: options.deployId ?? 'jcb-mcp', configuration: options.configuration ?? {} }),
     15 * 60_000, 'The isolated browser timed out provisioning the selected deployment.');

@@ -17,7 +17,7 @@ import { createJoomlaProvider, connectComposerProvider } from './joomla.js';
 import { hostArtifactTools, transferArtifact } from './artifacts.js';
 import { runtimeTools } from './runtime-tools.js';
 import { jcbTools } from './jcb.js';
-import { getSkillPrompt, listSkillPrompts, listSkillResources, readSkillResource, searchSkills, skillCapabilities, skillStatus } from './skills.js';
+import { getSkillPrompt, listSkillPrompts, listSkillResources, onSkillRevisionChanged, readSkillResource, searchSkills, skillCapabilities, skillStatus } from './skills.js';
 
 export interface HostOptions {
   baseURL?: string;
@@ -70,7 +70,7 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   validator.addFormat('uri', { type: 'string', validate: (value: string) => URL.canParse(value) });
   const inputs = new Map(tools.map(item => [item.name, validator.compile(item.inputSchema)]));
   const server = new Server({ name: packageName, version: packageVersion }, {
-    capabilities: { tools: {}, resources: {}, prompts: {} },
+    capabilities: { tools: {}, resources: { listChanged: true }, prompts: { listChanged: true } },
     instructions: 'Read joomengine://skills/SKILL.md and use skills_capabilities to match this host’s tools to canonical guides for your task. Open a fresh workspace or attach to the designated client workspace. Discover installed Joomla capabilities through native_tools. Use joomla_tools for the independent TypeScript implementation. Preserve wanted files and backups before closing a cloud session.',
   });
   let workspace: Workspace | undefined;
@@ -80,6 +80,14 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   let pending: Promise<unknown> = Promise.resolve();
   let disposed = false;
   let usedNative = false;
+  let unsubscribeSkills: (() => void) | undefined;
+  server.oninitialized = () => {
+    if (disposed) return;
+    unsubscribeSkills ??= onSkillRevisionChanged(() => {
+      void Promise.all([server.sendResourceListChanged(), server.sendPromptListChanged()])
+        .catch(error => server.onerror?.(error));
+    });
+  };
 
   async function closeNative() {
     if (usedNative && workspace) await workspace.call('native_close', {}).catch(() => {});
@@ -200,6 +208,8 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   let closing: Promise<void> | undefined;
   function dispose() {
     disposed = true;
+    unsubscribeSkills?.();
+    unsubscribeSkills = undefined;
     return closing ??= pending.then(async () => { try { await closeWorkspace(); } finally { await composer?.close(); } });
   }
   server.onclose = () => { void dispose().catch(error => console.error('Workspace cleanup failed:', error.message)); };

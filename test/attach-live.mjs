@@ -31,6 +31,7 @@ async function fixture(t) {
     <output id="ai-proof"></output><button id="upload-site-button">Upload</button><input type="file" id="upload-site-file"><script type="module">
     import { createRuntimeViewHost } from './src/runtime-views.mjs';
     import { t } from './src/i18n.mjs';
+    if (performance.getEntriesByType('navigation')[0]?.type === 'reload') document.title = 'Reloaded primary owner';
     window.addEventListener('message',event=>{ if(event.source===document.querySelector('.jec-ai-frame').contentWindow && event.data===1) document.getElementById('ai-proof').textContent='Visual AI action received'; });
     const files = new Map();
     let nativeSessions = 0;
@@ -262,13 +263,22 @@ test('attach to the selected running owner, preserve site and process across dis
     active=await attachWorkspace({endpoint,playgroundUrl:base,tabId:first.tabs[0].tabId});
     assert.equal((await active.call('workspace_info',{})).workspaceId,'restored-owner');
     await active.call('browser_click',{scope:'playground',selector:'#reload-owner'});
-    await delay(500);
+    // The idle window is in front, so Firefox may throttle the owner tab's reload timer.
+    // Probe the current document independently of the retained runtime before attempting a stale write.
+    let reloaded;
+    const reloadDeadline = Date.now() + 15_000;
+    while (!reloaded && Date.now() < reloadDeadline) {
+      const list = await active.listAttachedTabs();
+      reloaded = list.tabs.find(tab => tab.title === 'Reloaded primary owner' && tab.previewLoaded);
+      if (!reloaded) await delay(100);
+    }
+    assert(reloaded, 'The original owner tab must finish loading a new document.');
+    if (mode === 'firefox') assert.notEqual(reloaded.tabId, first.tabs[0].tabId);
     await assert.rejects(active.call('file_write',{path:'/wrong-owner',content:'never replay',expectedRevision:null}),/workspace_close, workspace_list, then workspace_attach/);
     await active.close();
     active=undefined;
-    const renewed=(await listWorkspaceTabs({endpoint,playgroundUrl:base})).tabs.find(tab=>tab.title==='Primary owner');
-    assert(renewed);
-    if (mode==='firefox') assert.notEqual(renewed.tabId,first.tabs[0].tabId);
+    const renewed=(await listWorkspaceTabs({endpoint,playgroundUrl:base})).tabs.find(tab=>tab.title==='Reloaded primary owner');
+    assert.equal(renewed?.tabId,reloaded.tabId);
     active=await attachWorkspace({endpoint,playgroundUrl:base,tabId:renewed.tabId});
     assert.equal((await active.call('workspace_info',{})).workspaceId,'existing-owner');
     await active.call('file_write',{path:'/wrong-owner',content:'first authorized write after reattachment',expectedRevision:null});

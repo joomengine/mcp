@@ -7,6 +7,7 @@ import { unzipSync } from 'fflate';
 import { loadCapabilityGroups } from './skill-capabilities.js';
 
 const repository = 'joomengine/skills';
+const gitEndpoint = 'https://github.com/' + repository + '.git/info/refs?service=git-upload-pack';
 const commitEndpoint = 'https://api.github.com/repos/' + repository + '/commits/HEAD';
 const archiveEndpoint = 'https://codeload.github.com/' + repository + '/zip/';
 const sha = /^[0-9a-f]{40}$/;
@@ -80,6 +81,32 @@ async function download(url: string, request: typeof fetch, accept: string, limi
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+// Git smart HTTP v0 advertises HEAD as the first ref, immediately after the service packet and flush.
+async function upstreamRevision(request: typeof fetch) {
+  try {
+    const data = await download(gitEndpoint, request, 'application/x-git-upload-pack-advertisement', 8 * 1024 * 1024);
+    const service = '001e# service=git-upload-pack\n0000';
+    const start = service.length;
+    const header = data.toString('latin1', start, start + 4);
+    const size = /^[0-9a-f]{4}$/.test(header) ? Number.parseInt(header, 16) : 0;
+    if (data.toString('latin1', 0, start) !== service || size <= 4 || size > 65520 || start + size > data.length) {
+      throw new Error('Invalid Git upload-pack advertisement');
+    }
+    const head = data.toString('latin1', start + 4, start + size).match(/^([0-9a-f]{40}) HEAD(?:\0[^\r\n]*)?\n?$/);
+    if (!head || /^0{40}$/.test(head[1])) throw new Error('Git did not advertise a valid HEAD');
+    return head[1];
+  } catch (gitError) {
+    // Some networks permit GitHub's API and codeload hosts but block the Git endpoint.
+    try {
+      const revision = (await download(commitEndpoint, request, 'application/vnd.github.sha', 100)).toString().trim();
+      if (!sha.test(revision) || /^0{40}$/.test(revision)) throw new Error('GitHub returned an invalid Skills revision');
+      return revision;
+    } catch (apiError) {
+      throw new Error(`Unable to resolve canonical Skills HEAD. Git: ${gitError}; API: ${apiError}`);
+    }
+  }
 }
 
 async function replaceFile(path: string, data: Buffer | string) {
@@ -178,8 +205,7 @@ export class SkillDistribution {
   private async refresh() {
     this.checkedAt = this.now();
     try {
-      const revision = (await download(commitEndpoint, this.request, 'application/vnd.github.sha', 100)).toString().trim();
-      if (!sha.test(revision)) throw new Error('GitHub returned an invalid Skills revision');
+      const revision = await upstreamRevision(this.request);
       this.remoteRevision = revision;
       if (revision === this.bundled.revision) {
         this.current = this.bundled;

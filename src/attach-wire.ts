@@ -54,6 +54,8 @@ export class DebugConnection {
 
   request(method: string, params: object = {}, timeoutMs = 610_000): Promise<any> {
     const id = ++this.sequence;
+    const commandError = new Error();
+    Error.captureStackTrace(commandError, this.request);
     return new Promise((resolve, reject) => {
       if (this.socket.readyState !== WebSocket.OPEN) return reject(new Error('The browser connection is closed.'));
       const timer = setTimeout(() => {
@@ -62,7 +64,11 @@ export class DebugConnection {
       }, timeoutMs);
       this.pending.set(id, {
         resolve: value => { clearTimeout(timer); resolve(value); },
-        reject: reason => { clearTimeout(timer); reject(reason); },
+        reject: reason => {
+          clearTimeout(timer);
+          commandError.message = method + ': ' + reason.message;
+          reject(commandError);
+        },
       });
       try { this.socket.send(JSON.stringify({ id, method, params })); }
       catch (error) {

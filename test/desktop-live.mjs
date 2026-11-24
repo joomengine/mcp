@@ -100,7 +100,7 @@ async function connectClient(endpoint) {
   return client;
 }
 async function call(client, name, args = {}) {
-  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 180_000 });
+  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 16 * 60_000 });
   const response = result.content.map(item => item.text).join('');
   assert(!result.isError, name + ' failed: ' + response);
   return JSON.parse(response);

@@ -16,7 +16,7 @@ Call `deployment_capture` with a discovered target and the saved record ID, or s
 
 ## Apply a change or start an independent site
 
-Use `deployment_configure` to change the running site's name, startup path, automatic login, languages, extensions, CLI commands, menus, template, content or overlays. Pass just the top-level fields to change. Arrays supply the complete desired collection. For example:
+Use `deployment_configure` to change the running site's name, startup path, automatic login, toolbar visibility, languages, extensions, CLI commands, menus, template, content or overlays. Pass just the top-level fields to change. Arrays supply the complete desired collection. For example:
 
 ```json
 {"configuration":{"siteName":"Documentation","initialPath":"/administrator/"}}
@@ -28,7 +28,7 @@ Submit PHP settings or a compatible PHP version in a separate `deployment_config
 {"configuration":{"phpSettings":{"max_input_vars":12000}}}
 ```
 
-For a change of Joomla distribution, JCB version, administrator, or underlying recipe, create an independent deployment. Use `workspace_open` when starting an owner. In an active owner, `deployment_launch` accepts a `source` and the exact `replaceWorkspaceId` returned by `workspace_info`. The owner handles unsaved edits and site replacement as in the dashboard. Re-read `workspace_info` after launch. The new installation has its own workspace ID.
+For a change of Joomla distribution, JCB version, administrator, or underlying recipe, create an independent deployment. Use `workspace_open` when starting an owner. On an idle attached dashboard, `deployment_launch` can start a source with no replacement ID. Saved recipes can be listed, imported and edited while PHP is stopped. With a running or stopped site selected, `deployment_launch` accepts a `source` and the exact `replaceWorkspaceId` returned by `workspace_info`. The owner handles unsaved edits and site replacement as in the dashboard. Re-read `workspace_info` after launch. The new installation has its own workspace ID.
 
 To preserve the live files and database in a second installation, call `deployment_clone` with the source `replaceWorkspaceId`. Supply optional configuration overrides for the copy, including a compatible JCB upgrade or changed sandbox administrator. Playground checkpoints the source and opens the copy under a new identity.
 

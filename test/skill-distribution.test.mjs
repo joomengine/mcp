@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -47,8 +47,34 @@ test('adopts one complete upstream revision and preserves verified content durin
     request() { assert.fail('Offline mode contacted the network'); } });
   assert.equal((await offline.status(true)).source, 'cached');
   assert.equal((await (await offline.snapshot()).read('SKILL.md')).toString(), 'updated guide');
-  await writeFile(join(cache, base, next + '.zip'), 'truncated archive');
+  const archive = (await readdir(join(cache, base))).find(path => path.endsWith('.zip'));
+  await writeFile(join(cache, base, archive), 'truncated archive');
   const recovered = new SkillDistribution({ bundle, cache, offline: true });
   assert.equal((await recovered.status()).revision, base);
   assert.equal((await (await recovered.snapshot()).read('SKILL.md')).toString(), 'bundled');
+
+  const raceCache = join(dir, 'race');
+  const startedAt = Date.now();
+  let releaseSlow, startSlow;
+  const slowStarted = new Promise(resolve => { startSlow = resolve; });
+  const holdSlow = new Promise(resolve => { releaseSlow = resolve; });
+  const requester = (rev, delayed = false) => async url => {
+    if (url.endsWith('/commits/HEAD')) {
+      if (delayed) { startSlow(); await holdSlow; }
+      return new Response(rev);
+    }
+    return new Response(zipSync(Object.fromEntries(Object.entries(files).map(
+      ([name, text]) => ['skills-' + rev + '/' + name, Buffer.from(text)]))));
+  };
+  const slow = new SkillDistribution({ bundle, cache: raceCache, offline: false, now: () => startedAt,
+    request: requester('d'.repeat(40), true) });
+  const fast = new SkillDistribution({ bundle, cache: raceCache, offline: false, now: () => startedAt + 1,
+    request: requester('e'.repeat(40)) });
+  const waiting = slow.snapshot();
+  await slowStarted;
+  await fast.snapshot();
+  releaseSlow();
+  await waiting;
+  const restarted = new SkillDistribution({ bundle, cache: raceCache, offline: true, now: () => startedAt + 2 });
+  assert.equal((await restarted.status()).revision, 'e'.repeat(40));
 });

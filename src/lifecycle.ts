@@ -6,11 +6,13 @@ const tool = (suffix: string, description: string, properties: Record<string, ob
 });
 export const lifecycleTools = [
   tool('sites', 'List this owner profile’s saved sites, protected storage keys and current running, stopped or idle state.'),
+  tool('pause', 'Pause the dashboard’s automatic launch countdown so you can inspect or edit its deployment.'),
   tool('start', 'Start the stopped site again, or launch the selected deployment from an idle dashboard.'),
   tool('stop', 'Save and stop the exact current site, keeping the owner and its saved data available.', { workspaceId: id }, ['workspaceId']),
   tool('restart', 'Restart PHP in the current site while retaining its files, database and owner.', { workspaceId: id }, ['workspaceId']),
   tool('reset', 'Erase the selected running or stopped site and launch the default deployment. Pass its exact workspace ID.', { workspaceId: id }, ['workspaceId']),
   tool('resume', 'Resume a stored site by its key. Use replaceWorkspaceId to allow a switch from the current site.', { storageKey: key, replaceWorkspaceId: id }, ['storageKey']),
+  tool('recover', 'Open the selected saved site’s original storage in Playground recovery mode, including after a failed start. Use the returned recovery flags to export files or repair configuration. Supply replaceWorkspaceId to authorize switching away from another site.', { storageKey: key, replaceWorkspaceId: id }, ['storageKey']),
   tool('rename', 'Rename the display name of a saved site in this browser profile.', { storageKey: key, name }, ['storageKey','name']),
   tool('delete', 'Delete a saved site by storage key. The current and stopped sites are protected.', { storageKey: key }, ['storageKey']),
 ];

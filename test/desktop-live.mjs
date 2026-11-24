@@ -12,7 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { DebugConnection } from '../dist/attach-wire.js';
 import { exerciseWorkspaceSurfaces } from './attach-ui-scenario.mjs';
-import { exerciseDeployment } from './deployment-scenario.mjs';
+import { exerciseDeployment, exerciseDeploymentLaunch } from './deployment-scenario.mjs';
 import { exerciseJcb } from './jcb-scenario.mjs';
 
 const binary = process.argv[2];
@@ -161,6 +161,7 @@ try {
   assert.equal(child.exitCode, null);
   console.log('A fresh MCP client reattached to the same JCB desktop site and verified the saved file and MariaDB row.');
   await exerciseJcb(client, { replaceWorkspaceId: resumed.workspaceId });
+  await exerciseDeploymentLaunch(invoke);
   await call(client, 'workspace_close');
 } finally {
   try { await client?.close(); }

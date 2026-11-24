@@ -305,6 +305,7 @@ try {
     case 'workspace_cache_clear': return runtime.clearJoomlaCache();
     case 'workspace_repair': {
       if (!runtime.recovery) throw new Error('The current site is not in Joomla recovery mode.');
+      if (!runtime.recovery.configured || runtime.recovery.filesOnly) throw new Error('Configuration repair requires a saved configuration and an available database. Use workspace_recovery_export to recover the files.');
       return runtime.repairConfiguration();
     }
     case 'workspace_recovery_export': {

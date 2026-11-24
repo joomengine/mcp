@@ -13,6 +13,6 @@ export function browserHandlerSource(operation: string): string {
     : operation.startsWith('deployment_') ? deploymentDispatch
     : operation.startsWith('browser_') ? browserUiDispatch
     : operation === 'site_console' || operation.startsWith('jcb_') || operation === 'extension_install' || operation === 'extension_enable_plugin' ? jcbDispatch : dispatch;
-  const parameters = handler === joomlaApi ? 'this, args' : 'this, op, args';
-  return 'async function(op, args) { const rt = this.agentCurrent?.() ?? this; return (' + handler.toString() + ')(' + parameters.replace('this', 'rt') + '); }';
+  const parameters = handler === joomlaApi ? 'rt, args' : 'rt, op, args';
+  return 'async function(op, args) { const rt = this.agentCurrent?.() ?? this; return (' + handler.toString() + ')(' + parameters + '); }';
 }

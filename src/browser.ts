@@ -1,12 +1,14 @@
 import { chromium, type JSHandle, type Page } from 'playwright';
 import { connectOwner } from './attach-owner.js';
 import { isAbsolute } from 'node:path';
+import { withBrowserDialogs, actionDialogs } from './browser-dialogs.js';
 import { browserInput, usesNativeInput } from './browser-input.js';
 import { browserHandlerSource } from './browser-router.js';
 import { playgroundBase } from './browser-catalog.js';
 export { getDeploymentCatalog } from './browser-catalog.js';
 
 export interface Workspace {
+  listAttachedTabs?(): Promise<unknown>;
   call(operation: string, args: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -26,24 +28,34 @@ export async function workspaceFromHandle(page: Page, owner: JSHandle, release: 
   const handlers = new Map<string, Promise<JSHandle>>();
   let closed: Promise<void> | undefined;
   async function invoke(operation: string, args: Record<string, unknown>): Promise<any> {
-      const source = browserHandlerSource(operation);
-      let handle = handlers.get(source);
-      if (!handle) {
-        handle = page.evaluateHandle('(' + source + ')');
-        handlers.set(source, handle);
-      }
-      return page.evaluate(async ({ owner, invoke, operation, args }: any) =>
-        invoke.call(owner.agentCurrent?.() ?? owner, operation, args),
-      { owner, invoke: await handle, operation, args });
+    const source = browserHandlerSource(operation);
+    let handle = handlers.get(source);
+    if (!handle) {
+      handle = page.evaluateHandle('(' + source + ')');
+      handlers.set(source, handle);
+    }
+    return page.evaluate(async ({ owner, invoke, operation, args }: any) =>
+      invoke.call(owner.agentCurrent?.() ?? owner, operation, args),
+    { owner, invoke: await handle, operation, args });
   }
   return {
     async call(operation, args) {
       if (closed) throw new Error('This browser workspace is closed.');
-      if (!usesNativeInput(operation)) return invoke(operation,args);
-      const cdp = await page.context().newCDPSession(page);
-      try {
-        return await browserInput(operation, args, invoke, (method, params) => cdp.send(method as Parameters<typeof cdp.send>[0], params as never));
-      } finally { await cdp.detach().catch(()=>{}); }
+      return withBrowserDialogs(actionDialogs(operation, args), async notify => {
+        const listener = (dialog: import('playwright').Dialog) => notify({
+          type: dialog.type(), message: dialog.message(),
+          finish: (accept, text) => accept ? dialog.accept(text) : dialog.dismiss(),
+        });
+        page.on('dialog', listener);
+        return async () => { page.off('dialog', listener); };
+      }, async () => {
+        if (!usesNativeInput(operation)) return invoke(operation, args);
+        const cdp = await page.context().newCDPSession(page);
+        try {
+          return await browserInput(operation, args, invoke,
+            (method, params) => cdp.send(method as Parameters<typeof cdp.send>[0], params as never));
+        } finally { await cdp.detach().catch(() => {}); }
+      });
     },
     close() {
       return closed ??= (async () => {

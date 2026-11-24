@@ -16,7 +16,7 @@ export const jcbTools = [
   tool('jcb_compile', 'Compile a saved JCB component through its installed administrator form. Returns verified ZIP paths and hashes. Use file_export on those paths to retain installers.', {
     componentId: { type: 'integer', minimum: 1 },
     joomlaMajor: { type: 'integer', minimum: 3, description: 'Defaults to the active Joomla major.' },
-    options: { type: 'object', additionalProperties: { type: 'string' }, description: 'Override named fields from jcb_list_components.compilerOptions for this compilation. Pass the exact field name and option value returned by this site.' }
+    options: { type: 'object', additionalProperties: { anyOf: [{ type: 'string' }, { type: 'array', uniqueItems: true, items: { type: 'string' } }] }, description: 'Override named fields from jcb_list_components.compilerOptions. Pass a string for a scalar control or an array of selected values for checkboxes and multiple selection.' }
   }, ['componentId']),
   tool('extension_install', 'Install one extension ZIP on the selected site. Supply an artifact ID from file_export or an HTTP(S) package URL.', {
     artifactId: { type: 'string', minLength: 1 }, url: { type: 'string', minLength: 1 }
@@ -245,26 +245,29 @@ try {
   const versions = [...(version?.options ?? [])].filter(o => /^\d+$/.test(o.value)).map(o => Number(o.value));
   // An installed JCB version or a plugin can add compiler fields. Only expose form
   // controls which a user can edit. The task, component, version and CSRF stay site-owned.
-  type Option = { name: string; label: string; type: string; value: string; choices?: { value: string; label: string }[] };
+  type Option = { name: string; label: string; type: string; value: string | string[]; choices?: { value: string; label: string }[] };
   const fields = new Map<string, Option>();
   for (const node of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input[name],select[name],textarea[name]')) {
-    if (node === component || node === version || node.matches(':disabled') ||
-        !/^[a-zA-Z][a-zA-Z0-9_]*(?:\[[a-zA-Z0-9_]+\])*$/.test(node.name)) continue;
+    if (node.name === component?.name || node.name === version?.name || node.name === 'task' || node.matches(':disabled,[readonly]') ||
+        !/^[a-zA-Z][a-zA-Z0-9_]*(?:\[[a-zA-Z0-9_]+\])*(?:\[\])?$/.test(node.name)) continue;
     const type = node.type;
     const label = compiler.doc.getElementById((node.id || node.name) + '-lbl')?.textContent?.trim() || node.name;
     const choiceLabel = (element: HTMLInputElement) => element.labels?.[0]?.textContent?.trim() || element.value;
     if (node.tagName === 'SELECT') {
       const select = node as HTMLSelectElement;
-      if (!select.multiple) fields.set(node.name, { name: node.name, label, type: 'select', value: select.value,
-        choices: [...select.options].filter(option => !option.disabled).map(option => ({ value: option.value, label: option.label.trim() })) });
-    } else if (type === 'radio') {
+      const options = [...select.options].filter(option => !option.matches(':disabled'));
+      fields.set(node.name, { name: node.name, label, type: select.multiple ? 'multiple' : 'select',
+        value: select.multiple ? options.filter(option => option.selected).map(option => option.value) : select.value,
+        choices: options.map(option => ({ value: option.value, label: option.label.trim() })) });
+    } else if (type === 'radio' || type === 'checkbox') {
       const input = node as HTMLInputElement;
       const field = fields.get(node.name) ?? { name: node.name, label: compiler.doc.getElementById(node.name + '-lbl')?.textContent?.trim() || label,
-        type: 'radio', value: '', choices: [] };
+        type, value: type === 'checkbox' ? [] : '', choices: [] };
       field.choices!.push({ value: input.value, label: choiceLabel(input) });
-      if (input.checked) field.value = input.value;
+      if (input.checked && Array.isArray(field.value)) field.value.push(input.value);
+      else if (input.checked) field.value = input.value;
       fields.set(node.name, field);
-    } else if (['text', 'number', 'date', 'datetime-local', 'url', 'textarea'].includes(type)) {
+    } else if (['text', 'search', 'number', 'range', 'color', 'date', 'month', 'week', 'time', 'datetime-local', 'url', 'email', 'tel', 'textarea'].includes(type)) {
       fields.set(node.name, { name: node.name, label, type, value: node.value });
     }
   }
@@ -285,13 +288,22 @@ try {
   const data = new URLSearchParams();
   for (const [key, value] of new FormData(form)) if (typeof value === 'string') data.append(key, value);
   if (![...data].some(([k, v]) => /^[a-f0-9]{32}$/i.test(k) && v === '1')) throw new Error('JCB did not supply the Joomla session form token.');
-  const appliedOptions: Record<string, string> = {};
+  const appliedOptions: Record<string, string | string[]> = {};
   for (const [name, value] of Object.entries(args.options ?? {})) {
     const field = fields.get(name);
-    if (!field || typeof value !== 'string' || (field.choices && !field.choices.some(choice => choice.value === value))) {
+    const values = Array.isArray(value) ? value : [value];
+    if (!field || Array.isArray(field.value) !== Array.isArray(value) || values.some(item => typeof item !== 'string' ||
+        (field.choices && !field.choices.some(choice => choice.value === item)))) {
       throw new Error('Choose a supported compiler field and value from jcb_list_components: ' + name);
     }
-    data.set(name, value);
+    if (Array.isArray(value)) {
+      data.delete(name);
+      // Joomla can pair checkboxes with hidden defaults, even when all boxes are cleared.
+      for (const input of form.querySelectorAll<HTMLInputElement>('input[type="hidden"][name]:not(:disabled)')) {
+        if (input.name === name) data.append(name, input.value);
+      }
+      for (const item of value) data.append(name, item);
+    } else data.set(name, value);
     appliedOptions[name] = value;
   }
   data.set(component.name, String(selected.id));

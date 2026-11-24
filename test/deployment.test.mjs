@@ -53,5 +53,8 @@ test('active native owner routes both current-site changes and replacements thro
     assert.equal((await deploymentDispatch(runtime, 'deployment_clone', { replaceWorkspaceId: 'selected' })).operation, 'clone');
     const opened = await deploymentDispatch(runtime, 'deployment_launch', { replaceWorkspaceId: 'selected', source: { deployId: 'blank' } });
     assert.deepEqual(opened, { operation: 'open', args: { deployId: 'blank', replaceWorkspaceId: 'selected' } });
+    await assert.rejects(deploymentDispatch(runtime, 'deployment_launch', { source: { deployId: 'blank' } }), /does not match/);
+    runtime.workspace.id = null;
+    assert.equal((await deploymentDispatch(runtime, 'deployment_launch', { source: { deployId: 'blank' } })).operation, 'open');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

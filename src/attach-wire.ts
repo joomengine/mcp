@@ -3,10 +3,26 @@ export class DebugConnection {
   private sequence = 0;
   private readonly pending = new Map<number, { resolve(value: any): void; reject(reason: Error): void }>();
 
+  private readonly listeners = new Map<string, Set<(params: any) => void>>();
+
+  on(name: string, handler: (params: any) => void) {
+    const listeners = this.listeners.get(name) ?? new Set();
+    listeners.add(handler);
+    this.listeners.set(name, listeners);
+    return () => {
+      listeners.delete(handler);
+      if (!listeners.size) this.listeners.delete(name);
+    };
+  }
+
   private constructor(private readonly socket: WebSocket) {
     socket.addEventListener('message', event => {
       if (typeof event.data !== 'string') return;
       const message = JSON.parse(event.data);
+      if (message.method && message.id === undefined) {
+        for (const handler of this.listeners.get(message.method) ?? []) handler(message.params);
+        return;
+      }
       const request = this.pending.get(message.id);
       if (!request) return;
       this.pending.delete(message.id);

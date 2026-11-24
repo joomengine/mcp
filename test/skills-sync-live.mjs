@@ -63,6 +63,7 @@ try {
   const routing = await call('skills_capabilities', {});
   assert.equal(routing.revision, status.revision);
   assert.deepEqual(routing.unmappedTools, []);
+  for (const group of routing.capabilities) assert(group.available, 'No registered tools for ' + group.id);
   const names = routing.capabilities.flatMap(capability => capability.operations.map(tool => tool.name));
   assert.deepEqual(names.sort(), tools.map(tool => tool.name).sort());
   for (const expectedHostTool of ['composer_tools', 'artifact_save', 'workspace_attach']) assert(names.includes(expectedHostTool));

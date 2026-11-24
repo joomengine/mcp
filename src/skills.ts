@@ -1,5 +1,6 @@
 import { extname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { isUtf8 } from 'node:buffer';
 import { SkillDistribution, type Snapshot } from './skill-distribution.js';
 import { loadCapabilityGroups, resolveCapabilities } from './skill-capabilities.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -29,6 +30,7 @@ type Catalogue = {
   snapshot: Snapshot;
   paths: string[];
   byUri: Map<string, string>;
+  types: Map<string, { text: boolean; mimeType: string }>;
   prompts: Workflow[];
   groups: Awaited<ReturnType<typeof loadCapabilityGroups>>;
   index?: Promise<Map<string, string>>;
@@ -60,7 +62,16 @@ async function loadCatalogue(snapshot: Snapshot): Promise<Catalogue> {
     const heading = (await snapshot.read(path)).toString().match(/^#\s+(.+)$/m)?.[1];
     prompts.push({ name, path, description: heading ?? path });
   }
-  return { snapshot, paths, byUri: new Map(paths.map(path => [uriFor(path), path])), prompts, groups: await loadCapabilityGroups(snapshot) };
+  const types = new Map<string, { text: boolean; mimeType: string }>();
+  for (const path of paths) {
+    const type = mediaType(path);
+    if (type.mimeType !== 'application/octet-stream') types.set(path, type);
+    else {
+      const bytes = await snapshot.read(path);
+      types.set(path, isUtf8(bytes) && !bytes.includes(0) ? { text: true, mimeType: 'text/plain' } : type);
+    }
+  }
+  return { snapshot, paths, types, byUri: new Map(paths.map(path => [uriFor(path), path])), prompts, groups: await loadCapabilityGroups(snapshot) };
 }
 
 async function catalogue() {
@@ -76,7 +87,7 @@ function mediaType(path: string) {
 }
 
 export async function listSkillResources(cursor?: string): Promise<ListResourcesResult> {
-  const { snapshot: { revision }, paths } = await catalogue();
+  const { snapshot: { revision }, paths, types } = await catalogue();
   let offset = 0;
   if (cursor !== undefined) {
     const match = /^([0-9a-f]+):([1-9][0-9]*)$/.exec(cursor);
@@ -86,7 +97,7 @@ export async function listSkillResources(cursor?: string): Promise<ListResources
     }
   }
   const resources = paths.slice(offset, offset + pageSize).map(path => ({
-    name: path, uri: uriFor(path), mimeType: mediaType(path).mimeType,
+    name: path, uri: uriFor(path), mimeType: types.get(path)!.mimeType,
     ...(path === rootEntry ? { description: `Start here to select a JCB workflow. Canonical joomengine/skills revision ${revision}.` } : {}),
   }));
   const next = offset + resources.length;
@@ -114,7 +125,7 @@ async function readFrom(catalog: Catalogue, uri: string): Promise<ReadResourceRe
   const path = catalog.byUri.get(canonical);
   if (!path) throw new McpError(-32002, `Unknown skills resource: ${canonical}`);
   const data = await catalog.snapshot.read(path);
-  const { text, mimeType } = mediaType(path);
+  const { text, mimeType } = catalog.types.get(path)!;
   return { contents: [text ? { uri: canonical, mimeType, text: data.toString('utf8') }
     : { uri: canonical, mimeType, blob: data.toString('base64') }] };
 }
@@ -140,7 +151,7 @@ export async function searchSkills(query: string, cursor?: string) {
   catalog.index ??= (async () => {
     const texts = new Map<string, string>();
     for (const path of catalog.paths) {
-      if (mediaType(path).text) texts.set(path, (await catalog.snapshot.read(path)).toString());
+      if (catalog.types.get(path)!.text) texts.set(path, (await catalog.snapshot.read(path)).toString());
     }
     return texts;
   })();

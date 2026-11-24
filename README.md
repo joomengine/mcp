@@ -53,9 +53,17 @@ node dist/cli.js
 
 Use `workspace_stop`, `workspace_start` and `workspace_restart` for runtime management. Use `workspace_rename` or `workspace_delete` for saved sites. A reset deletes the selected site's data and launches the dashboard's default deployment. Pass the exact ID returned by `workspace_info` to reset. A separately exported complete-site backup can be restored later. The native owner checks pending forms and editor changes during transitions.
 
+To change a running deployment or save, update and launch a recipe, use the [deployment tools](docs/deployment.md). For file changes, database inspection, PHP debugging, captured messages, storage recovery and backup management, see [Playground development tools](docs/platform.md).
+
+## Find the right Skills and tools
+
+Call `skills_capabilities` to see which operations are available on this MCP host and which canonical Skills guide each operation. Use `skills_search` to find examples and workflows by topic. MCP clients can read resources and select prompts directly. Tool-only clients can use `skills_list` and `skills_read`.
+
+The npm package includes a full offline distribution. When Skills are used online, the installed server checks the canonical default branch, validates any newer snapshot and makes its resources and prompts available together. `skills_status` reports the active and bundled revisions and any synchronization error. Use `{"refresh":true}` to check immediately. [Skills synchronization and offline operation](docs/skills.md)
+
 ## Build a component
 
-1. Read `joomengine://skills/SKILL.md` and the request-to-extension workflow, or select a build prompt through MCP. Tool-only clients can use `skills_list` and `skills_read` for the same guidance. Skills, supporting examples and tools are available offline in the package. Each build records the exact upstream revision in `skills/manifest.json`.
+1. Read `joomengine://skills/SKILL.md` and the request-to-extension workflow, or select a build prompt through MCP.
 2. Call `deployment_catalog` to inspect the available recipes and Joomla, JCB, and PHP releases. Call `workspace_open` with `{"deployId":"jcb-mcp"}` to start Joomla with JCB and the native MCP. Use `{"deployId":"blank"}` for Joomla only. Use `workspace_attach` when you want an existing site. Inspect the returned workspace identity before editing.
 3. Discover the site's actions with `native_tools` and use `native_call` with the returned schemas. The maintained TypeScript implementation exposes Joomla Web Services via `joomla_tools` and `joomla_call`. The optional Composer bridge connects to its configured remote site. The site controls its grants and write confirmations. [Joomla connections](docs/joomla.md)
 4. Author native JCB records, compile, install the resulting package, exercise its administrator and site pages, and verify any generated API. Browser tools can inspect and operate Joomla forms. Editor, database, PHP debugger, and mail tools operate on that workspace. [Compilation and verification](docs/jcb.md)
@@ -73,6 +81,8 @@ Use `workspace_stop`, `workspace_start` and `workspace_restart` for runtime mana
 | `JOOMENGINE_ARTIFACT_DIR` | Existing host directory for binary import and export. |
 | `JOOMENGINE_COMPOSER_SITE` | Enable the existing Composer client's stdio bridge for this configured site alias. |
 | `JOOMENGINE_MCP_COMPOSER_BIN` | Absolute path to the Composer launcher when it is outside PATH. |
+| `JOOMENGINE_SKILLS_CACHE` | Directory for verified canonical Skills snapshots shared by MCP sessions. |
+| `JOOMENGINE_SKILLS_OFFLINE=1` | Use the last verified cached revision or the full npm-bundled fallback. |
 | `JOOMENGINE_MCP_TOKEN` | Bearer credential for the optional Streamable HTTP listener. |
 
 For a single operator using a Streamable HTTP client, set `JOOMENGINE_MCP_TOKEN` and start `node dist/cli.js --http --port 8787`. Connect to `http://127.0.0.1:8787/mcp` with the matching Bearer header. A cloud agent can run the server and browser together in its own environment. Each MCP session has its own active workspace. Runtime handles, artifact IDs, and client-browser attachments belong to the session that created them. Keep the debug endpoint private to the machine running the browser.

@@ -15,6 +15,12 @@ test('stdio client discovers the workflow and receives useful errors before choo
     }
     assert.equal(names.includes('workspace_attach'), false);
     assert.equal(names.includes('joomla.api'), false);
+    const response = await client.callTool({ name: 'skills_capabilities', arguments: {} });
+    assert.equal(response.isError, undefined);
+    const map = JSON.parse(response.content[0].text);
+    assert.deepEqual(map.unmappedTools, []);
+    assert.deepEqual(map.capabilities.flatMap(group => group.operations.map(tool => tool.name)).sort(), [...names].sort());
+    assert.equal(map.capabilities.find(group => group.id === 'composer').available, false);
     const noSite = await client.callTool({ name: 'file_read', arguments: { path: '/index.php' } });
     assert.equal(noSite.isError, true);
     assert.match(noSite.content[0].text, /workspace/i);

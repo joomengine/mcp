@@ -1,6 +1,8 @@
 name: Publish npm release
 
 on:
+  pull_request:
+    paths: [package.json, .github/workflows/publish-release.yml]
   push:
     branches: [main]
     paths: [package.json, .github/workflows/publish-release.yml]
@@ -10,12 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-release
+  group: npm-release-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -61,6 +62,7 @@ jobs:
 
   publish:
     needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -125,6 +127,34 @@ jobs:
           done
           echo 'Published npm integrity could not be verified.' >&2
           exit 1
+      - name: Verify the public npm channel and run a clean consumer
+        run: |
+          channel=latest
+          if [[ "$VERSION" == *-* ]]; then channel=next; fi
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error "https://registry.npmjs.org/@joomengine%2fmcp/$channel" -o channel.json && jq -e --arg version "$VERSION" '.version == $version' channel.json >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == 12 ]]; then echo "npm channel $channel did not resolve to $VERSION" >&2; exit 1; fi
+            sleep 5
+          done
+          consumer="$RUNNER_TEMP/registry-consumer"
+          npm install --prefix "$consumer" --prefer-online --registry=https://registry.npmjs.org "@joomengine/mcp@$VERSION"
+          cd "$consumer"
+          ./node_modules/.bin/joomengine-playground-mcp --help
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+          import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+          const client = new Client({ name: 'npm-consumer', version: '1' });
+          try {
+            await client.connect(new StdioClientTransport({ command: process.execPath, args: ['node_modules/@joomengine/mcp/dist/cli.js'] }));
+            assert.equal(client.getServerVersion().version, process.env.VERSION);
+            assert((await client.listTools()).tools.some(tool => tool.name === 'workspace_open'));
+            const guide = await client.readResource({ uri: 'joomengine://skills/SKILL.md' });
+            assert(guide.contents[0].text.length > 0);
+          } finally { await client.close(); }
+          NODE
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

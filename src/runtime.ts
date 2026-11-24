@@ -76,6 +76,27 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
     const { id, revision, name, size, filename, updatedAt, sourceSiteKey, siteName, joomlaVersion, jcbVersion, phpVersion } = record;
     return { id, revision, name, size, filename, updatedAt, sourceSiteKey, siteName, joomlaVersion, jcbVersion, phpVersion };
   }
+  function fileBytes(input: Record<string, any>) {
+    if (input.artifactId !== undefined) {
+      if (input.content !== undefined || input.encoding !== undefined) throw new Error('Supply an artifact ID or inline contents.');
+      const value = artifacts.get(text(input.artifactId, 'Artifact ID'));
+      if (!value || value.uploading) throw new Error('The file artifact is unavailable in this workspace connection.');
+      return value.bytes;
+    }
+    if (typeof input.content !== 'string' || input.content.length > 1048576) throw new Error('A file write requires at most 1 MiB of inline text or base64. Use a file artifact for larger writes.');
+    return input.encoding === 'base64' ? Uint8Array.from(atob(input.content), c => c.charCodeAt(0)) : encoder.encode(input.content);
+  }
+  function fileChange(input: Record<string, any>) {
+    if (input.operation !== 'write') return input;
+    if (input.expectedRevision !== null && typeof input.expectedRevision !== 'string') throw new Error('Supply the existing revision, or null to create a new file.');
+    const { content, artifactId, encoding, id, ...fields } = input;
+    return { ...fields, bytes: fileBytes(input), overwrite: input.expectedRevision !== null };
+  }
+  function fileReceipt(result: any) {
+    // The editor retains an undo snapshot even when a later change fails.
+    if (result?.ok === false) return { isError: true, structuredContent: result, content: [{ type: 'text', text: JSON.stringify(result) }] };
+    return result;
+  }
   function requestOptions() {
     const method = args.method ?? 'GET';
     if (!['GET','POST','PUT','PATCH','DELETE','HEAD'].includes(method)) throw new Error('Unsupported HTTP method.');
@@ -95,7 +116,7 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
         jcbVersion: config.jcbVersion, phpVersion: runtime.runtimeInfo?.phpVersion ?? config.phpVersion,
         healthy: !!runtime.healthy, persistent: !!config.persistence, lastSavedAt: runtime.lastSavedAt,
         persistencePending: !!runtime.persistencePending, debuggerState: runtime.debugger?.state,
-        mailCount: runtime.mail?.state?.count
+        mailCount: runtime.mail?.state?.count, persistenceState: runtime.persistenceState, recovery: runtime.recovery
       };
     }
     case 'workspace_flush':
@@ -116,8 +137,12 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
     }
     case 'file_list':
       return page(await runtime.workspace.request('list', { path: args.path ?? '/' }));
+    case 'file_stat':
+      return runtime.workspace.request('stat', { path: text(args.path, 'Workspace path'), revision: args.revision === true });
+    case 'file_history': return { items: await runtime.workspace.request('history', {}) };
+    case 'file_search_cancel': return runtime.workspace.request('cancelSearch', { cursor: text(args.cursor, 'Search cursor') });
     case 'file_search':
-      return runtime.workspace.request('search', { path: args.path ?? '/', query: args.query, kind: args.kind, cursor: args.cursor, caseSensitive: args.caseSensitive, maxResults: 100 });
+      return runtime.workspace.request('search', { ...args, path: args.path ?? '/', maxResults: args.maxResults ?? 100 });
     case 'file_read': {
       const file = await runtime.workspace.request('read', { path: text(args.path, 'File path') });
       const bounds = range(file.bytes.byteLength);
@@ -135,33 +160,43 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
       return { path: file.path, revision: file.revision, ...bounds, encoding: args.encoding ?? 'utf8',
         content: args.encoding === 'base64' ? base64(bytes) : decoder.decode(bytes) };
     }
-    case 'file_write': {
-      if (typeof args.content !== 'string' || args.content.length > 1048576) throw new Error('A file write requires at most 1 MiB of text or base64.');
-      if (args.expectedRevision !== null && typeof args.expectedRevision !== 'string') throw new Error('Supply the existing revision, or null to create a new file.');
-      const bytes = args.encoding === 'base64' ? Uint8Array.from(atob(args.content), value => value.charCodeAt(0)) : encoder.encode(args.content);
-      return runtime.workspace.request('write', { path: text(args.path, 'File path'), bytes, expectedRevision: args.expectedRevision, overwrite: args.expectedRevision !== null });
+    case 'file_write': case 'file_import': {
+      const { operation: _, ...edit } = fileChange({ ...args, path: text(args.path, 'File path'), operation: 'write',
+        ...(operation === 'file_import' ? { artifactId: text(args.id, 'Artifact ID') } : {}) });
+      return fileReceipt(await runtime.workspace.request('write', edit));
     }
+    case 'file_batch':
+      return fileReceipt(await runtime.workspace.request('batch', { changes: args.changes.map(fileChange) }));
     case 'file_manage': {
       const action = args.action;
-      if (action === 'recover') return runtime.workspace.request('recover', { recoveryId: text(args.recoveryId, 'Recovery ID') });
+      if (action === 'recover') return fileReceipt(await runtime.workspace.request('recover', { recoveryId: text(args.recoveryId, 'Recovery ID') }));
       if (!['mkdir','delete','copy','rename'].includes(action)) throw new Error('Unsupported file operation.');
       const path = text(args.path, 'File path');
       const target = ['copy','rename'].includes(action) ? text(args.target, 'Destination path') : undefined;
-      return runtime.workspace.request(action, { path, target, recursive: args.recursive, expectedRevision: args.expectedRevision });
+      return fileReceipt(await runtime.workspace.request(action, { path, target, recursive: args.recursive, expectedRevision: args.expectedRevision }));
     }
     case 'file_export': {
       const path = text(args.path, 'File path');
       const file = await runtime.workspace.request('read', { path });
       return retain(file.bytes, path.split('/').pop()!, path.endsWith('.zip') ? 'application/zip' : 'application/octet-stream');
     }
+    case 'database_open': {
+      const { url } = await runtime.openDatabase();
+      const base = new URL(runtime.baseUrl);
+      if (!base.pathname.endsWith('/')) base.pathname += '/';
+      const target = new URL(url);
+      if (target.origin !== base.origin || !target.pathname.startsWith(base.pathname + '__adminer/')) throw new Error('Invalid database viewer URL.');
+      return { path: '/' + target.href.slice(base.href.length), url: target.href };
+    }
     case 'database_query': {
       const sql = text(args.sql, 'SQL');
       const parameters = args.parameters ?? [];
       if (sql.length > 65536 || !Array.isArray(parameters) || parameters.length > 256 ||
-        parameters.some(value => value !== null && !['string','boolean','number'].includes(typeof value))) {
+        parameters.some(value => value !== null && !['string','boolean','number'].includes(typeof value) &&
+          !(typeof value === 'object' && typeof value.base64 === 'string' && value.base64.length <= 1048576))) {
         throw new Error('Invalid SQL statement or parameter values.');
       }
-      const payload = base64(encoder.encode(JSON.stringify({ sql, parameters, rows: integer(args.rows, 100, 1, 250) })));
+      const payload = base64(encoder.encode(JSON.stringify({ sql, parameters, binaryColumns: args.binaryColumns ?? [], rows: integer(args.rows, 100, 1, 250) })));
       // Parameter values travel as data and retain their types when bound. Joomla owns the credentials.
       const program = `<?php
 try {
@@ -171,6 +206,12 @@ try {
     $input = json_decode(base64_decode('${payload}'), true, 512, JSON_THROW_ON_ERROR);
     $statement = $pdo->prepare($input['sql']);
     foreach ($input['parameters'] as $i => $value) {
+        if (is_array($value)) {
+            $bytes = base64_decode($value['base64'], true);
+            if ($bytes === false) throw new InvalidArgumentException('A binary parameter must contain valid base64.');
+            $statement->bindValue($i + 1, $bytes, PDO::PARAM_LOB);
+            continue;
+        }
         $type = is_null($value) ? PDO::PARAM_NULL : (is_int($value) ? PDO::PARAM_INT : (is_bool($value) ? PDO::PARAM_BOOL : PDO::PARAM_STR));
         $statement->bindValue($i + 1, $value, $type);
     }
@@ -178,7 +219,14 @@ try {
     $rows = []; $size = 0; $truncated = false;
     if ($statement->columnCount()) {
         while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
-            $size += strlen(json_encode($row, JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR));
+            foreach ($row as $key => $value) {
+                if (is_int($value) && ($value > 9007199254740991 || $value < -9007199254740991)) {
+                    $row[$key] = (string) $value;
+                } elseif (is_string($value) && (in_array($key, $input['binaryColumns'], true) || !preg_match('//u', $value))) {
+                    $row[$key] = ['base64' => base64_encode($value)];
+                }
+            }
+            $size += strlen(json_encode($row, JSON_THROW_ON_ERROR));
             if (count($rows) >= $input['rows'] || $size > 262144) { $truncated = true; break; }
             $rows[] = $row;
         }
@@ -194,11 +242,17 @@ try {
     }
     case 'mail_list':
       return page(await runtime.mail.list());
+    case 'mail_clear': return runtime.mail.clear();
     case 'mail_get': {
       const message = await runtime.mail.get(text(args.id, 'Mail ID'));
       if (!message) throw new Error('The captured message no longer exists.');
       if (args.format === 'raw') return retain(message.raw, message.id + '.eml', 'message/rfc822');
       const { parsed, raw: _raw, ...summary } = message;
+      if (args.format === 'headers') {
+        const headers = parsed?.headers ?? [];
+        const json = encoder.encode(JSON.stringify(headers));
+        return json.length > chunkSize ? { ...summary, artifact: await retain(json, 'headers.json', 'application/json') } : { ...summary, headers };
+      }
       const format = args.format === 'html' ? 'html' : 'text';
       const content = parsed?.[format] ?? null;
       if (typeof content === 'string' && content.length > chunkSize) {
@@ -210,7 +264,7 @@ try {
       const debug = runtime.debugger;
       const requestKey = Symbol.for('joomengine.mcp.debug-request');
       switch (args.action) {
-        case 'state': return { state: debug.state, request: runtime[requestKey] ?? null };
+        case 'state': return { state: debug.state, capabilities: debug.capabilities, request: runtime[requestKey] ?? null };
         case 'start': {
           const { resolveSiteURL } = await upstream('config.mjs');
           const url = resolveSiteURL(args.path ?? '/', runtime.baseUrl);
@@ -231,40 +285,64 @@ try {
           return debug.setBreakpoints(runtime.documentRoot + path, args.breakpoints ?? []);
         }
         case 'scopes': return debug.scopes(args.frameId);
-        case 'variables': return debug.variables(args.reference);
+        case 'variables': return debug.variables(args.reference, { start: args.start ?? 0, count: args.count ?? 100 });
         case 'evaluate': return debug.evaluate(text(args.expression, 'PHP expression'), args.frameId);
         case 'pause': case 'stop': case 'continue': case 'next': case 'stepIn': case 'stepOut': case 'stackTrace':
           return (await debug[args.action]()) ?? { state: debug.state };
         default: throw new Error('Unknown debugger action.');
       }
     }
-    case 'deployment_configure': {
-      const config = args.configuration;
-      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new TypeError('A deployment configuration object is required.');
-      if (Object.hasOwn(config, 'phpSettings')) {
-        if (Object.keys(config).length !== 1) throw new Error('Apply PHP settings in a separate call.');
-        return runtime.updatePhpSettings(config.phpSettings);
-      }
-      if (typeof runtime.applyConfiguration !== 'function') throw new Error('This attached Playground exposes deployment configuration through its owner window.');
-      await runtime.applyConfiguration(config);
-      return { applied: true, siteName: runtime.configuration.siteName, language: runtime.configuration.language };
+    case 'workspace_cache_clear': return runtime.clearJoomlaCache();
+    case 'workspace_repair': {
+      if (!runtime.recovery) throw new Error('The current site is not in Joomla recovery mode.');
+      return runtime.repairConfiguration();
+    }
+    case 'workspace_recovery_export': {
+      const value = await runtime.exportRecoveryFiles();
+      return retain(value.bytes, value.filename, value.mimeType);
+    }
+    case 'storage_list': case 'storage_remove': {
+      const shell = await upstream('app.mjs');
+      if (typeof shell.listManagedStorage !== 'function') throw new Error('This Playground predates the storage management API. Update the Playground host.');
+      if (operation === 'storage_list') return page(await shell.listManagedStorage());
+      return shell.removeManagedStorageById(text(args.id, 'Storage ID'), { allowUnassigned: args.allowUnassigned === true });
     }
     case 'site_export': {
       const format = args.format ?? 'bundle';
-      const value = await runtime.exportSite({ format, includePlaygroundConfiguration: format === 'bundle' });
+      const value = await runtime.exportSite({ format, includePlaygroundConfiguration: args.includePlaygroundConfiguration ?? format === 'bundle',
+        ...(args.database ? { database: args.database } : {}) });
       return retain(value.bytes, value.filename, value.mimeType, format === 'bundle' ? 'site' : 'file');
     }
-    case 'backup_list': case 'backup_save': case 'backup_export': {
+    case 'backup_list': case 'backup_save': case 'backup_update': case 'backup_import': case 'backup_delete': case 'backup_export': {
       const { createSiteBackups } = await upstream('site-backups.mjs');
-      const backups = createSiteBackups();
-      if (operation === 'backup_list') return page((await backups.list()).map(backupSummary));
+      const backups = runtime[Symbol.for('joomengine.mcp.backups')] ??= createSiteBackups();
+      if (operation === 'backup_list') return { ...page((await backups.list()).map(backupSummary)), usage: await backups.usage() };
       if (operation === 'backup_export') {
         const backup = await backups.get(text(args.id, 'Backup ID'));
         return retain(new Uint8Array(await backup.blob.arrayBuffer()), backup.filename, backup.mimeType, 'site');
       }
-      const archive = await runtime.exportSite({ format: 'bundle', includePlaygroundConfiguration: true });
-      const result = await backups.saveArchive(archive, { name: args.name, configuration: runtime.configuration, sourceSiteKey: runtime.configuration.storageKey });
-      if (!result.saved) throw new Error(result.error?.message ?? `Playground could not save the backup (${result.reason}).`);
+      if (operation === 'backup_delete') {
+        if (typeof backups.removeRevision !== 'function') throw new Error('This Playground predates revision-checked backup deletion. Update the Playground host.');
+        await backups.removeRevision(text(args.id, 'Backup ID'), integer(args.expectedRevision, 0, 1, Number.MAX_SAFE_INTEGER));
+        window.dispatchEvent(new Event('joomengine-backups-changed'));
+        return { deleted: true, id: args.id };
+      }
+      let result;
+      if (operation === 'backup_import') {
+        const { readSiteExport } = await upstream('site-import.mjs');
+        const parsed = await readSiteExport(artifact().bytes);
+        result = await backups.saveArchive({ bytes: parsed.bytes, metadata: parsed.metadata }, { name: args.name });
+      } else {
+        const options: Record<string, unknown> = { name: args.name, configuration: runtime.configuration, sourceSiteKey: runtime.configuration.storageKey };
+        if (operation === 'backup_update') {
+          options.id = text(args.id, 'Backup ID');
+          options.expectedRevision = integer(args.expectedRevision, 0, 1, Number.MAX_SAFE_INTEGER);
+        }
+        const archive = await runtime.exportSite({ format: 'bundle', includePlaygroundConfiguration: true });
+        result = await backups.saveArchive(archive, options);
+      }
+      if (!result.saved) throw new Error(result.error?.message ?? 'Playground could not save the backup (' + result.reason + ').');
+      window.dispatchEvent(new Event('joomengine-backups-changed'));
       return backupSummary(result.record);
     }
     case 'site_restore': {
@@ -276,8 +354,8 @@ try {
       }
       return runtime.agentRestore(value.bytes, args.replaceWorkspaceId);
     }
-    // Host file transfer operations are internal; MCP clients can only invoke them through
-    // the operator-selected artifact directory. A partial upload is never a usable artifact.
+    // Both host-directory and direct MCP uploads share this per-workspace store.
+    // A partial upload is never a usable artifact.
     case 'artifact_info': {
       const value = artifact();
       return { id: args.id, filename: value.filename, mimeType: value.mimeType, size: value.bytes.length, sha256: value.sha256 };
@@ -285,12 +363,18 @@ try {
     case 'artifact_upload_begin': {
       const size = integer(args.size, -1, 0, 512 * 1024 * 1024);
       const filename = text(args.filename, 'Filename');
+      if (encoder.encode(filename).length > 240 || /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(filename) || /[. ]$/.test(filename)
+        || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) throw new Error('Choose a plain artifact filename.');
       if (size < 0 || !['site','file'].includes(args.kind)) throw new Error('Invalid upload metadata.');
       reserve(size);
       const id = crypto.randomUUID();
       artifacts.set(id, { bytes: new Uint8Array(size), written: 0, uploading: true, kind: args.kind, filename,
         mimeType: filename.toLowerCase().endsWith('.zip') ? 'application/zip' : 'application/octet-stream' });
       return { id };
+    }
+    case 'artifact_upload_status': {
+      const value = artifact(true);
+      return { id: args.id, received: value.written, size: value.bytes.byteLength };
     }
     case 'artifact_upload_chunk': {
       const value = artifact(true);
@@ -303,6 +387,10 @@ try {
       return { received: value.written };
     }
     case 'artifact_upload_finish': {
+      const complete = artifacts.get(text(args.id, 'Artifact ID'));
+      if (complete && !complete.uploading && complete.sha256 === args.sha256) {
+        return { id: args.id, filename: complete.filename, mimeType: complete.mimeType, size: complete.bytes.length, sha256: complete.sha256 };
+      }
       const value = artifact(true);
       if (value.written !== value.bytes.length) throw new Error('The upload is incomplete.');
       const sha256 = await checksum(value.bytes);

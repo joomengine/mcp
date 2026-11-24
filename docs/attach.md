@@ -50,3 +50,18 @@ The Linux and macOS builds expose the Qt WebEngine page debugger. The Windows bu
 - To restore an exported complete site, call `site_restore` with its artifact ID. Pass the active `workspace_info.workspaceId` as `replaceWorkspaceId` to authorize replacing that exact site. The MCP verifies the owner again at its replacement prompt and selects Continue. With that argument omitted, the client chooses in the owner window. Separate prompts about unsaved edits remain under client control. A successful result contains the new workspace ID. After a cancellation, inspect `workspace_info` before submitting a different restore.
 - `deployment_configure` sends PHP settings through the owner’s PHP controls. Changes to the site name, initial path, language, automatic login, multilingual options, extensions, startup commands, menus, content and overlays use the owner’s Configure Deployment → Apply flow. Close any unfinished deployment form before using this tool.
 - Exit the browser or desktop application and launch normally to end its debug listener. Keep the listener on loopback. A client with access to a browser debugger has control of its browser profile.
+
+## Operate the visible application
+
+`browser_inspect`, `browser_click`, `browser_fill`, `browser_select`, `browser_check` and `browser_upload` address the current Joomla preview by default. Select `scope: "playground"` for the owner toolbar, deployment form, activity, settings and dialogs. Each inspection returns control references bound to its document. Inspect again after navigation. `framePath` accepts selectors or iframe references in order, for example to inspect the editable body inside a rich-text field. `browser_select` accepts a list of values for multiple selects. To submit a file, retain it with `artifact_load` or `file_export`, call `browser_upload` with its `artifactIds`, then submit the form using its normal controls.
+
+| Surface | How to operate it |
+| --- | --- |
+| Joomla site or administrator | Use site-relative `browser_navigate` and the default site scope. Use `reload: true` to refresh a route. |
+| Playground owner | Inspect and click `scope: "playground"`. React to the selected site's visible menus, language, theme, status, editors, dialogs and feedback. |
+| JoomEngine Code | Open the Code button from the shell and use `scope: "code"`. Use the shell toolbar for opening Code's auxiliary panels. |
+| Adminer | Open DB from the shell and use `scope: "database"`. SQL import accepts an artifact through the native file input. |
+| Editor AI | Open the AI button in Code. Use `browser_screenshot`, `browser_pointer` and `browser_keyboard` with `scope: "ai"`. The provider login and conversation run inside the editor's isolated iframe. |
+| Detached editor or DB | Use the owner layout's redock control to return an auxiliary editor to its dock. Its live files and database remain available through the workspace tools. |
+
+A screenshot returns a PNG image and its workspace artifact ID. Use `artifact_save` to deliver it or `artifact_release` after reading it. Pointer coordinates are CSS pixels relative to the visible surface. Click a control before sending keyboard input. In the editor AI panel, connecting an account and sending project content follow the provider and permission choices made for that workspace.

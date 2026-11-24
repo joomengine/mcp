@@ -44,7 +44,7 @@ const bootstrap = [
   }),
   tool('workspace_close', 'Release the current workspace. Closing a cloud browser discards its private profile. Export wanted artifacts first. Closing an attached workspace leaves the client application running.'),
 ];
-const longRunning = ['workspace_open', 'workspace_attach', 'workspace_start', 'workspace_restart', 'workspace_stop', 'workspace_reset', 'workspace_resume', 'deployment_configure', 'site_console', 'jcb_compile', 'extension_install', 'jcb_refresh_tools', 'site_export', 'site_restore', 'backup_save', 'artifact_save', 'artifact_load'];
+const longRunning = ['workspace_open', 'workspace_attach', 'workspace_start', 'workspace_restart', 'workspace_stop', 'workspace_reset', 'workspace_resume', 'deployment_configure', 'site_console', 'jcb_compile', 'extension_install', 'jcb_refresh_tools', 'site_export', 'site_restore', 'backup_save', 'backup_update', 'backup_import', 'backup_export', 'workspace_recovery_export', 'workspace_repair', 'artifact_save', 'artifact_load'];
 const external = (prefix: string, label: string) => [
   tool(prefix + '_tools', 'List the ' + label + ' tool schemas, passing nextCursor as cursor for subsequent pages.', { cursor: textField }),
   tool(prefix + '_call', 'Invoke a discovered ' + label + ' tool using its exact input schema.', { name: textField, arguments: { type: 'object' } }, ['name']),

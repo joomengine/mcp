@@ -1,0 +1,70 @@
+name: Check upstream platform compatibility
+on:
+  schedule:
+    - cron: '27 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: upstream-platform-contract
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      fingerprint: ${{ steps.sources.outputs.fingerprint }}
+      changed: ${{ steps.lookup.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Identify the deployed platform, provider releases and canonical sources
+        id: sources
+        shell: bash
+        run: |
+          set -eu -o pipefail
+          state="$RUNNER_TEMP/upstream-versions"
+          for repo in playground joomengine skills joomla-mcp mcp_package mcp_client; do
+            sha=$(git ls-remote --exit-code "https://github.com/joomengine/$repo.git" HEAD | cut -f1)
+            echo "$repo $sha" >> "$state"
+          done
+          curl -fsSL --retry 3 https://playground.joomengine.org/assets/manifest.json | jq -er '.sourceCommit' >> "$state"
+          for name in mcp joomla-mcp; do
+            curl -fsSL --retry 3 "https://registry.npmjs.org/@joomengine%2f$name/latest" | jq -er '.version + " " + .dist.integrity' >> "$state"
+          done
+          curl -fsSL --retry 3 https://repo.packagist.org/p2/joomengine/mcp-client.json | jq -er '.packages["joomengine/mcp-client"][0].source.reference' >> "$state"
+          cat "$state" >> "$GITHUB_STEP_SUMMARY"
+          echo "fingerprint=$(sha256sum "$state" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: lookup
+        with:
+          path: .verified-upstream
+          key: upstream-compat-v1-${{ github.sha }}-${{ steps.sources.outputs.fingerprint }}
+          lookup-only: true
+  playground:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    uses: ./.github/workflows/verify.yml
+  desktop:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    uses: ./.github/workflows/desktop.yml
+  platform:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    uses: ./.github/workflows/platform.yml
+  lifecycle:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    uses: ./.github/workflows/lifecycle.yml
+  composer:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    uses: ./.github/workflows/composer.yml
+  record:
+    needs: [resolve, playground, desktop, platform, lifecycle, composer]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Verified all platform integrations' > .verified-upstream
+      - uses: actions/cache/save@v4
+        with:
+          path: .verified-upstream
+          key: upstream-compat-v1-${{ github.sha }}-${{ needs.resolve.outputs.fingerprint }}

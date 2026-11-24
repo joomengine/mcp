@@ -1,6 +1,7 @@
 import type { Workspace } from './browser.js';
 import { browserHandlerSource } from './browser-router.js';
 import { connectOwner } from './attach-owner.js';
+import { browserInput, usesNativeInput } from './browser-input.js';
 import { DebugConnection } from './attach-wire.js';
 
 export interface AttachOptions {
@@ -70,8 +71,10 @@ async function connectCDP(endpoint: URL, base: URL, tabId?: string): Promise<Run
       objectId, functionDeclaration, arguments: values.map(value => ({ value })),
       awaitPromise: true, returnByValue: true,
     }))?.value;
+    const invoke = (operation: string, args: Record<string, unknown>) => call(browserHandlerSource(operation), [operation,args]);
     return {
-      invoke: (operation, args, fn) => call(fn, [operation, args]),
+      invoke: (operation, args, fn) => usesNativeInput(operation)
+        ? browserInput(operation, args, invoke, (method, params) => wire.request(method, params)) : call(fn, [operation,args]),
       async detach() {
         try { await call('function () { this.dispose(); }', []); }
         finally { wire.close(); }
@@ -104,11 +107,13 @@ async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise
       functionDeclaration, this: { handle }, arguments: values.map(value => ({ type: 'string', value })),
       target, awaitPromise: true,
     }));
+    const invoke = async (operation: string, args: Record<string, unknown>, fn = browserHandlerSource(operation)) => {
+      const reply = await call('async function(op, input) { return JSON.stringify(await (' + fn + ').call(this, op, JSON.parse(input))); }', [operation, JSON.stringify(args)]);
+      return reply.type === 'undefined' ? undefined : JSON.parse(reply.value);
+    };
     return {
-      async invoke(operation, args, fn) {
-        const reply = await call('async function(op, input) { return JSON.stringify(await (' + fn + ').call(this, op, JSON.parse(input))); }', [operation, JSON.stringify(args)]);
-        return reply.type === 'undefined' ? undefined : JSON.parse(reply.value);
-      },
+      invoke: (operation, args, fn) => usesNativeInput(operation)
+        ? browserInput(operation, args, invoke, (method, params) => wire.request(method, params), tab.id) : invoke(operation,args,fn),
       async detach() {
         try { await call('function () { this.dispose(); }', []); }
         finally { await endSession(); }

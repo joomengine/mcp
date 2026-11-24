@@ -4,6 +4,7 @@
   "description": "Operate JoomEngine Playground workspaces and build Joomla extensions with JCB.",
   "license": "Apache-2.0",
   "repository": { "type": "git", "url": "git+https://github.com/joomengine/mcp.git" },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org" },
   "type": "module",
   "engines": { "node": ">=22.16" },
   "bin": { "joomengine-playground-mcp": "./dist/cli.js" },

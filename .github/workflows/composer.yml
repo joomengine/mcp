@@ -28,12 +28,5 @@ jobs:
         run: |
           client_directory="$RUNNER_TEMP/joomengine-php-client"
           mkdir -p "$client_directory"
-          if ! composer require --no-interaction --no-progress --working-dir="$client_directory" 'joomengine/mcp-client:^1.0' > "$RUNNER_TEMP/composer-client.log" 2>&1; then
-            cat "$RUNNER_TEMP/composer-client.log"
-            # Until mcp_client#5 ships, Packagist's only stable release requires an SDK blocked by Composer.
-            grep -Fq 'PKSA-s52d-n7sx-trsg' "$RUNNER_TEMP/composer-client.log" || exit 1
-            ref=adc0d788cbef14e6880c8befdfdb504c4de00c10
-            echo 'Testing the indexed Packagist candidate from joomengine/mcp_client#5.' >> "$GITHUB_STEP_SUMMARY"
-            composer require --no-interaction --no-progress --working-dir="$client_directory" "joomengine/mcp-client:dev-fix/supported-php-sdk#$ref"
-          fi
+          composer require --no-interaction --no-progress --working-dir="$client_directory" 'joomengine/mcp-client:^1.0.1'
           node test/joomla-composer.mjs "$client_directory/vendor/bin/joomengine-mcp"

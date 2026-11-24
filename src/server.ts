@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { Ajv } from 'ajv';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
@@ -24,6 +25,7 @@ export interface HostOptions {
   headless?: boolean;
 }
 
+const { name: packageName, version: packageVersion } = createRequire(import.meta.url)('../package.json') as { name: string; version: string };
 const textField = { type: 'string', minLength: 1 } as const;
 function tool(name: string, description: string, properties: Record<string, object> = {}, required: string[] = []): Tool {
   return { name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false } };
@@ -58,7 +60,7 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   const validator = new Ajv({ strict: false, allErrors: false });
   validator.addFormat('uri', { type: 'string', validate: (value: string) => URL.canParse(value) });
   const inputs = new Map(tools.map(item => [item.name, validator.compile(item.inputSchema)]));
-  const server = new Server({ name: '@joomengine/mcp', version: '0.1.0' }, {
+  const server = new Server({ name: packageName, version: packageVersion }, {
     capabilities: { tools: {}, resources: {}, prompts: {} },
     instructions: 'Read joomengine://skills/SKILL.md and follow the Playground and native JCB authoring workflows. Open a fresh workspace or attach to the designated client workspace. Discover installed Joomla capabilities through native_tools. Use joomla_tools for the independent TypeScript implementation. Preserve wanted files and backups before closing a cloud session.',
   });

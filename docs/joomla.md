@@ -32,7 +32,7 @@ Use the JCB + MCP recipe for native discovery of the site's published operations
 
 ## Reach a separate native Joomla site over Composer stdio
 
-Install a compatible release with `composer require joomengine/mcp-client:^1.0`. The 1.0.0 release constrains the PHP SDK to a version that Composer blocks under advisory PKSA-s52d-n7sx-trsg. Until a patched client is released, an existing installation can use the upstream compatibility branch through `composer require joomengine/mcp-client:dev-fix/supported-php-sdk` in a project that allows this explicit development dependency. The integration workflow first attempts the stable release and records when it tests the upstream candidate. [Client compatibility PR](https://github.com/joomengine/mcp_client/pull/5)
+Install the stable client with `composer require joomengine/mcp-client:^1.0.1`. The integration workflow installs this public Packagist package and exercises its stdio server against an HTTPS site. [Composer client on Packagist](https://packagist.org/packages/joomengine/mcp-client)
 
 From the Composer project's root, register an alias using the private credential prompt and configure the host:
 

@@ -17,14 +17,20 @@ async function call(name, args = {}) {
   assert.notEqual(reply.isError, true, name + ': ' + output);
   return reply.structuredContent ?? JSON.parse(output);
 }
-async function defaults(view) {
-  const { schema } = await call('jcb_form', { view });
-  // A JCB model can remove conditional fields from a specific installation's
-  // native form. Only use defaults actually declared by that form.
-  return Object.fromEntries((schema.required ?? []).flatMap(key => {
-    const { default: value } = schema.properties[key];
+// Joomla validates a candidate using the flags on that record. Supply required
+// native defaults only when the authored values alone do not validate.
+async function prepareRecord(record) {
+  const { schema, validation } = await call('jcb_form', { view: record.view, values: record.fields });
+  if (validation.valid) return record;
+  const defaults = Object.fromEntries((schema.required ?? []).flatMap(key => {
+    if (Object.hasOwn(record.fields, key)) return [];
+    const value = schema.properties[key]?.default;
     return value === undefined || value === '' || value === null ? [] : [[key, value]];
   }));
+  const fields = { ...defaults, ...record.fields };
+  const checked = await call('jcb_form', { view: record.view, values: fields });
+  assert.equal(checked.validation.valid, true, record.view + ': ' + checked.validation.message);
+  return { ...record, fields };
 }
 const admin = '/administrator/index.php?option=com_mcpnotebook';
 const ids = { field: randomUUID(), view: randomUUID(), component: randomUUID() };
@@ -34,19 +40,18 @@ try {
   const guide = await client.readResource({ uri: 'joomengine://skills/testing/scenarios/notes-admin-verification.md' });
   assert.match(guide.contents[0].text, /Notes/);
   await call('workspace_open', { deployId: 'jcb-mcp' });
-  const [fieldDefaults, viewDefaults, componentDefaults] = await Promise.all(['field', 'admin_view', 'joomla_component'].map(defaults));
   const { tablePrefix } = await call('database_query', { sql: 'SELECT 1' });
   assert.match(tablePrefix, /^[A-Za-z0-9_]+$/);
   const read = async (sql, parameters = []) => (await call('database_query', { sql, parameters })).rows;
   const rows = await read('SELECT guid FROM ' + tablePrefix + 'componentbuilder_fieldtype WHERE guid = ?', ['201327fe-3067-4316-a155-3fe2a52e05c0']);
   assert.equal(rows.length, 1, 'The native Joomla Text field type is required');
   console.log('Create a new component, concrete Title field, Note view, field assignment and component view assignment');
-  const created = await call('jcb_save_records', { records: [
-    { key: 'notes-title', view: 'field', guid: ids.field, fields: { ...fieldDefaults, published: 1, access: 1, name: 'MCP Notebook Title',
+  const records = [
+    { key: 'notes-title', view: 'field', guid: ids.field, fields: { published: 1, access: 1, name: 'MCP Notebook Title',
       fieldtype: rows[0].guid, xml, datatype: 'VARCHAR', datalenght: 'Other', datalenght_other: '120', datadefault: '', indexes: '0', store: '0' } },
-    { key: 'notes-view', view: 'admin_view', guid: ids.view, fields: { ...viewDefaults, published: 1, access: 1, system_name: 'MCP Notebook Notes',
+    { key: 'notes-view', view: 'admin_view', guid: ids.view, fields: { published: 1, access: 1, system_name: 'MCP Notebook Notes',
       name_single: 'Note', name_list: 'Notes', short_description: 'Manage notebook notes', type: '1' } },
-    { key: 'notebook', view: 'joomla_component', guid: ids.component, fields: { ...componentDefaults, published: 1, access: 1,
+    { key: 'notebook', view: 'joomla_component', guid: ids.component, fields: { published: 1, access: 1,
       name: 'MCP Notebook', system_name: 'MCP Notebook', name_code: 'mcpnotebook', short_description: 'Administrator notebook',
       author: 'JoomEngine', companyname: 'JoomEngine', email: 'qa@example.test', website: 'https://joomengine.org/',
       component_version: '1.0.0', namespace_prefix: 'Joomengine' } },
@@ -56,7 +61,10 @@ try {
     { key: 'notebook-views', view: 'component_admin_views', match: { joomla_component: ids.component }, dependsOn: ['notebook', 'notes-fields'],
       fields: { joomla_component: ids.component, published: 1, addadmin_views: { addadmin_views0: { adminview: ids.view, icomoon: 'pencil',
         mainmenu: '1', dashboard_add: '1', dashboard_list: '1', submenu: '1', checkin: '1', filter: '2', order: '1' } } } },
-  ] });
+  ];
+  const prepared = [];
+  for (const record of records) prepared.push(record.dependsOn ? record : await prepareRecord(record));
+  const created = await call('jcb_save_records', { records: prepared });
   assert(created.results.length === 5 && created.results.every(r => r.status === 'applied'), JSON.stringify(created));
   const component = created.results.find(r => r.key === 'notebook');
   assert.equal(component.guid, ids.component);

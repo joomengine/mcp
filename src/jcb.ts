@@ -7,7 +7,8 @@ const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_]*$' };
 export const jcbTools = [
   tool('jcb_list_components', 'List component IDs, names, and supported target versions from the authenticated JCB compiler.'),
   tool('jcb_form', 'Describe editable fields on this installation’s native JCB administrator form before using jcb_save_records. Returns its JSON Schema with types, required fields, defaults, choices and relationship metadata where available. Optionally select individual fields.', {
-    view: identifier, fields: { type: 'array', minItems: 1, uniqueItems: true, items: identifier }
+    view: identifier, fields: { type: 'array', minItems: 1, uniqueItems: true, items: identifier },
+    values: { type: 'object', description: 'Candidate source fields for a new record. Runs native validation without saving and describes the fields accepted for that input.' }
   }, ['view']),
   tool('jcb_compile', 'Compile a saved JCB component through its installed administrator form. Returns verified ZIP paths and hashes. Use file_export on those paths to retain installers.', {
     componentId: { type: 'integer', minimum: 1 },
@@ -33,6 +34,16 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
   const base = new URL(runtime.agentModuleBase ?? '../../../', site);
   const moduleUrl = new URL('src/joomla/index.mjs', base).href;
   if (base.origin !== site.origin) throw new Error('The Joomla provisioning module must share the Playground origin.');
+  async function runJoomlaProgram(script: string, payload: Record<string, unknown>) {
+    const { buildPhpProgram, parseProvisioningResult } = await import(moduleUrl);
+    const source = await buildPhpProgram('customize', { root: runtime.documentRoot, admin: runtime.installation?.administrator, ...payload }, async (name: string) => {
+      if (name === 'customize') return script;
+      const res = await fetch(new URL('src/joomla/php/common.php', base));
+      if (!res.ok) throw new Error('Cannot load Playground’s Joomla bootstrap.');
+      return res.text();
+    });
+    return parseProvisioningResult(await runtime.runPhp(source, { timeoutMs: 600_000 }));
+  }
   if (operation === 'extension_install') {
     const { installExtension, installExtensionFromURL } = await import(moduleUrl);
     if (Boolean(args.artifactId) === Boolean(args.url)) throw new Error('Supply exactly one artifactId or HTTPS url.');
@@ -63,19 +74,53 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
   if (operation === 'jcb_form') {
     if (typeof args.view !== 'string' || !/^[a-z][a-z0-9_]*$/.test(args.view)) throw new Error('Select a JCB administrator view.');
     const { discoverJoomlaConfiguration } = await import(moduleUrl);
-    const result = await discoverJoomlaConfiguration(runtime, {
-      kind: 'record', component: 'com_componentbuilder', view: args.view, admin: runtime.installation?.administrator
-    });
-    const view = result.configurationTargets[0].view;
+    const target = { kind: 'record', component: 'com_componentbuilder', view: args.view };
+    const result = args.values === undefined
+      ? await discoverJoomlaConfiguration(runtime, { ...target, admin: runtime.installation?.administrator })
+      : await runJoomlaProgram(String.raw`<?php
+try {
+    $root = playgroundRoot($playground);
+    [$app, $container, $db] = playgroundApplication($root, true);
+    $user = playgroundDataAdministrator($root, $playground, $app, $container, $db);
+    playgroundDataLanguage($playground, $app, $container);
+    $target = playgroundDataCanonicalTarget($playground['target'], $app);
+    $ctx = playgroundDataContext($target, [], $app, $db, $user);
+    if (array_intersect(array_keys($playground['values']), ['id', 'guid', 'extension_id', 'asset_id', 'checked_out', 'checked_out_time'])) {
+        throw new InvalidArgumentException('Supply source fields for a new JCB record without database identity fields.');
+    }
+    $values = playgroundDataMerge($ctx['data'], $playground['values']);
+    // New-record overlays validate once before checking the writable fields.
+    // JCB models can remove conditional fields from their cached native form.
+    try {
+        playgroundDataValidate($ctx['model'], $values);
+        $validation = ['valid' => true];
+    } catch (Throwable $error) {
+        $validation = ['valid' => false, 'message' => playgroundDataRedact($error->getMessage(), $playground)];
+    }
+    $form = $ctx['model']->getForm($values, false);
+    if (!$form) throw new RuntimeException('The native configuration form is unavailable.');
+    $form->bind($values);
+    $schema = playgroundDataSchema($form, $ctx['metadata']);
+    $fields = (array) $schema['properties'];
+    foreach (array_keys($fields) as $name) {
+        if (!$form->getField($name) && !$form->getGroup($name, true)) unset($fields[$name]);
+    }
+    $schema['properties'] = (object) $fields;
+    $schema['required'] = array_values(array_intersect($schema['required'], array_keys($fields)));
+    ob_clean();
+    playgroundFinish(['ok' => true, 'view' => $target['view'], 'schema' => $schema, 'validation' => $validation]);
+} catch (Throwable $error) { ob_clean(); playgroundFinish(['ok' => false, 'error' => playgroundDataRedact($error->getMessage(), $playground)]); }`, { target, values: args.values });
+    const view = result.view ?? result.configurationTargets[0].view;
     const schema = result.schema;
-    if (!args.fields) return { view, schema };
+    const validation = result.validation ? { validation: result.validation } : {};
+    if (!args.fields) return { view, schema, ...validation };
     if (!Array.isArray(args.fields) || !args.fields.length) throw new Error('Select at least one field.');
     const properties: Record<string, unknown> = {};
     for (const name of args.fields) {
       if (typeof name !== 'string' || !Object.hasOwn(schema.properties, name)) throw new Error('Unknown field in the installed ' + view + ' form: ' + name);
       properties[name] = schema.properties[name];
     }
-    return { view, schema: { ...schema, properties, required: schema.required.filter((name: string) => Object.hasOwn(properties, name)) } };
+    return { view, schema: { ...schema, properties, required: schema.required.filter((name: string) => Object.hasOwn(properties, name)) }, ...validation };
   }
   if (operation === 'jcb_save_records') {
     if (!Array.isArray(args.records) || !args.records.length || args.records.length > 50) throw new Error('Supply between one and fifty JCB records.');
@@ -92,7 +137,6 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
   }
   if (operation === 'jcb_refresh_tools') {
     if (typeof args.component !== 'string' || !/^com_[a-z][a-z0-9_]{0,95}$/.test(args.component)) throw new Error('Select an installed Joomla component.');
-    const { buildPhpProgram, parseProvisioningResult } = await import(moduleUrl);
     // Native Operations delegates discovery to a PHP child process. Browser PHP
     // runs the same installed registration and synchronization classes in one request.
     const script = String.raw`<?php
@@ -150,13 +194,7 @@ try {
     playgroundFinish(['ok' => true, 'refreshed' => true, 'component' => $target, 'apiRoutes' => $changes['apiRoutes'],
         'unsupportedRoutes' => $changes['unsupportedRoutes'], 'revision' => $changes['revision']]);
 } catch (Throwable $error) { playgroundFinish(['ok' => false, 'error' => $error->getMessage()]); }`;
-    const source = await buildPhpProgram('customize', { root: runtime.documentRoot, component: args.component, admin: runtime.installation?.administrator }, async (name: string) => {
-      if (name === 'customize') return script;
-      const res = await fetch(new URL('src/joomla/php/common.php', base));
-      if (!res.ok) throw new Error('Cannot load Playground’s Joomla bootstrap.');
-      return res.text();
-    });
-    return parseProvisioningResult(await runtime.runPhp(source, { timeoutMs: 600_000 }));
+    return runJoomlaProgram(script, { component: args.component });
   }
   if (operation !== 'jcb_list_components' && operation !== 'jcb_compile') throw new Error('Unknown JCB operation.');
   const route = 'administrator/index.php?option=com_componentbuilder&view=compiler';

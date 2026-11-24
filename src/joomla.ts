@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { createJoomlaMcp, ToolsetSchema, type ApiConfig } from '@joomengine/joomla-mcp';
-import { JoomlaApiError, type JoomlaApiRequest, type JoomlaApiResponse, type JoomlaApiTransport } from '@joomengine/joomla-mcp/adapters';
+import * as adapters from '@joomengine/joomla-mcp/adapters';
+import type { JoomlaApiRequest, JoomlaApiResponse, JoomlaApiTransport } from '@joomengine/joomla-mcp/adapters';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -37,6 +38,8 @@ export async function createJoomlaProvider(workspace: RequestWorkspace) {
   const info = await workspace.call('workspace_info', {}) as { workspaceId?: string; siteUrl?: string };
   if (!info.workspaceId || !info.siteUrl) throw new Error('The active Joomla workspace has no site identity.');
   const { workspaceId, siteUrl } = info;
+  // 0.8.1 exported its HTTP error class alongside the JCB action catalogue.
+  const { JoomlaApiError } = adapters as typeof adapters & { JoomlaApiError?: new (status: number, data: unknown) => Error };
   const request = async (_config: ApiConfig, request: JoomlaApiRequest): Promise<JoomlaApiResponse> => {
     if (request.authentication === 'joomla-update-token') {
       throw new Error('The Joomla core updater requires a separately configured Joomla Update token.');
@@ -44,7 +47,8 @@ export async function createJoomlaProvider(workspace: RequestWorkspace) {
     const response = await workspace.call('joomla.api', { ...request, workspaceId, siteUrl }) as JoomlaApiResponse;
     if (response.status < 200 || response.status >= 300) {
       // Never forward a PHP error page or token-bearing request headers as diagnostics.
-      throw new JoomlaApiError(response.status, null);
+      if (JoomlaApiError) throw new JoomlaApiError(response.status, null);
+      throw new Error(`Joomla API returned HTTP ${response.status}.`);
     }
     return response;
   };
@@ -78,7 +82,15 @@ export async function createJoomlaProvider(workspace: RequestWorkspace) {
     await Promise.allSettled([client.close(), server.close()]);
     throw error;
   }
-  return provider(client, async () => { await client.close(); await server.close(); });
+  const embedded = provider(client, async () => { await client.close(); await server.close(); });
+  if ((ToolsetSchema.options as readonly string[]).includes('jcb.read')) return embedded;
+  return { ...embedded, async callTool(name: string, args: Record<string, unknown> = {}) {
+    if (args.domain === 'jcb' || (typeof args.action === 'string' && args.action.startsWith('jcb.')) ||
+        (Array.isArray(args.toolsets) && args.toolsets.some(scope => typeof scope === 'string' && scope.startsWith('jcb.')))) {
+      throw new Error('Direct JCB actions require @joomengine/joomla-mcp 0.8.1 or later. Update the embedded dependency, or use native_tools on the JCB + MCP deployment.');
+    }
+    return embedded.callTool(name, args);
+  } };
 }
 
 /** Connect only to a site configuration previously saved by the operator's Composer client. */

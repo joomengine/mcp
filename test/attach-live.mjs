@@ -22,6 +22,27 @@ async function listen(server) {
   return server.address().port;
 }
 
+async function debuggerEndpoint(profile, checkProcess) {
+  const firefox = mode === 'firefox';
+  const filename = firefox ? 'WebDriverBiDiServer.json' : 'DevToolsActivePort';
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    checkProcess();
+    try {
+      const descriptor = await readFile(path.join(profile, filename), 'utf8');
+      const port = firefox ? JSON.parse(descriptor).ws_port : Number(descriptor.split('\n')[0]);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        return firefox ? 'ws://127.0.0.1:' + port + '/session' : 'http://127.0.0.1:' + port;
+      }
+    } catch (error) {
+      // The browser may still be writing its startup descriptor.
+      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    }
+    await delay(100);
+  }
+  throw new Error('The browser did not publish its debugging endpoint in ' + filename);
+}
+
 // The fixture uses the real Playground owner/companion implementation over two BroadcastChannel endpoints.
 // Hosted runs use the full deployment and its persistent filesystem.
 async function fixture(t) {
@@ -179,15 +200,11 @@ test('attach to the selected running owner, preserve site and process across dis
   if (!['chromium', 'firefox'].includes(mode)) throw new Error('Unknown ATTACH_BROWSER.');
   const executable = process.env.ATTACH_EXECUTABLE || mode;
   const base = hosted ? 'https://playground.joomengine.org/' : await fixture(t);
-  const initialUrl = hosted ? base + '?deploy=jcb-mcp&immediate=1' : base;
+  const initialUrl = hosted ? base + '?deploy=jcb-mcp&start=0' : base;
   const profile = await mkdtemp(path.join(tmpdir(), 'joomengine-attach-'));
-  const portProbe = createServer();
-  const port = await listen(portProbe);
-  await new Promise(resolve => portProbe.close(resolve));
-  const endpoint = mode === 'firefox' ? 'ws://127.0.0.1:' + port + '/session' : 'http://127.0.0.1:' + port;
-  const args = mode === 'firefox' ? ['--headless','--no-remote','--profile',profile,'--remote-debugging-port',String(port),initialUrl] :
+  const args = mode === 'firefox' ? ['--headless','--no-remote','--profile',profile,'--remote-debugging-port','0',initialUrl] :
     ['--headless','--disable-gpu','--no-first-run','--disable-dev-shm-usage','--remote-debugging-address=127.0.0.1',
-      '--remote-debugging-port=' + port,'--user-data-dir=' + profile, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),initialUrl];
+      '--remote-debugging-port=0','--user-data-dir=' + profile, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),initialUrl];
   const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   let tail = '';
   let startError;
@@ -206,15 +223,23 @@ test('attach to the selected running owner, preserve site and process across dis
 
   let active;
   t.after(async () => { await active?.close().catch(() => {}); });
+  const checkProcess = () => {
+    if (startError) throw startError;
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error('Browser exited: ' + tail);
+  };
+  const endpoint = await debuggerEndpoint(profile, checkProcess);
+  console.log(mode + ' opened its local debugging endpoint.');
   let lastError, info;
   const deadline = Date.now() + (hosted ? 9 * 60_000 : 35_000);
   while (Date.now() < deadline) {
-    if (startError) throw startError;
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error('Browser exited: ' + tail);
+    checkProcess();
     try {
       active ??= await attachWorkspace({endpoint,playgroundUrl:base});
-      info = await active.call('workspace_info', {});
-      if (info.healthy) break;
+      const next = await active.call('workspace_info', {});
+      if (next.phase !== info?.phase) console.log('Playground owner phase: ' + next.phase);
+      info = next;
+      lastError = undefined;
+      if (info.healthy || (hosted && info.phase === 'idle')) break;
     } catch (error) {
       lastError = error;
       await active?.close().catch(() => {});
@@ -222,8 +247,25 @@ test('attach to the selected running owner, preserve site and process across dis
     }
     await delay(hosted ? 2000 : 300);
   }
-  if (!info?.healthy || !active) throw new Error('Failed to start the selected owner: ' + (lastError?.message ?? info?.phase) + '\n' + tail);
-  assert.equal(info.healthy, true);
+  try {
+    if (hosted && active && info?.phase === 'idle') {
+      // Start once through the attached owner. Background tabs intentionally suppress automatic launch.
+      await active.call('workspace_start', {});
+      info = await active.call('workspace_info', {});
+    }
+    if (!active || !info?.healthy) {
+      throw new Error('No healthy Playground owner. Last observed phase: ' + (info?.phase ?? 'unavailable') +
+        '\n' + tail, { cause: lastError });
+    }
+    if (hosted) assert.equal(info.deployId, 'jcb-mcp');
+  } catch (error) {
+    if (hosted) {
+      await active?.close().catch(() => {});
+      active = undefined;
+      await reportTransitionFailure(endpoint, base).catch(() => console.error('Playground owner diagnostics unavailable.'));
+    }
+    throw error;
+  }
   if (!hosted) assert.equal(info.workspaceId, 'existing-owner');
   const native = await active.call('native_tools', {});
   assert.ok(native.tools.length, 'The in-page native MCP session must preserve its authentication headers.');

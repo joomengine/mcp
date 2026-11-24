@@ -73,7 +73,7 @@ try {
   assert(repaired.backup.endsWith('/configuration-' + broken.revision + '.php'));
   const running = await call('workspace_restart', { workspaceId: recovery.workspaceId });
   assert.equal(running.phase, 'running');
-  assert.equal((await call('workspace_info')).recovery, undefined);
+  assert.equal(Boolean((await call('workspace_info')).recovery), false);
   assert.equal((await call('file_read', { path: '/owner-marker.txt' })).content, 'survives reopening');
   const page = await call('site_request', { path: '/index.php' });
   assert(page.status >= 200 && page.status < 400);

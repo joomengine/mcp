@@ -34,6 +34,16 @@ function checkedBiDi(result: any) {
   return result.result;
 }
 
+function expiredOwner(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return /realm (?:is null|with id .* not found)|could not find object with given id|cannot find (?:execution )?context with specified id|execution context was destroyed|no such handle/i.test(error.message);
+}
+
+async function releaseOwner(dispose: () => Promise<unknown>) {
+  try { await dispose(); }
+  catch (error) { if (!expiredOwner(error)) throw error; }
+}
+
 interface RuntimeConnection {
   list(): Promise<unknown>;
   invoke(operation: string, args: Record<string, unknown>, fn: string): Promise<unknown>;
@@ -65,7 +75,7 @@ async function connectCDP(endpoint: URL, base: URL, tabId?: string): Promise<Run
         : withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
         ? browserInput(operation, args, invoke, request) : call(fn, [operation, args])),
       async detach() {
-        try { await call('function () { this.dispose(); }', []); }
+        try { await releaseOwner(() => call('function () { this.dispose(); }', [])); }
         finally { wire.close(); }
       },
     };
@@ -108,7 +118,7 @@ async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise
         : withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
         ? browserInput(operation, args, invoke, request, tab.id) : invoke(operation, args, fn)),
       async detach() {
-        try { await call('function () { this.dispose(); }', []); }
+        try { await releaseOwner(() => call('function () { this.dispose(); }', [])); }
         finally { await endSession(); }
       },
     };
@@ -140,6 +150,9 @@ export async function attachWorkspace(options: AttachOptions): Promise<Workspace
       if (closed) throw new Error('This Playground connection was detached.');
       try { return await connection.invoke(operation, args, browserHandlerSource(operation)); }
       catch (error) {
+        if (expiredOwner(error)) {
+          throw new Error(operation + ': The selected owner document changed. Call workspace_close, workspace_list, then workspace_attach with the intended tabId. Verify workspace_info and the result before retrying a write.', { cause: error });
+        }
         throw new Error(operation + ': ' + (error instanceof Error ? error.message : String(error)), { cause: error });
       }
     },

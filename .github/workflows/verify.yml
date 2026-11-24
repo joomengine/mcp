@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      provider_version:
+        description: Published Joomla MCP version selected by the upstream compatibility check
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -22,6 +27,13 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Exercise the published Joomla provider selected by the compatibility check
+        if: inputs.provider_version != ''
+        env:
+          PROVIDER_VERSION: ${{ inputs.provider_version }}
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts "@joomengine/joomla-mcp@$PROVIDER_VERSION"
+          node -e "const v = require('./node_modules/@joomengine/joomla-mcp/package.json').version; if (v !== process.env.PROVIDER_VERSION) throw Error('Unexpected Joomla provider ' + v)"
       - run: npm run skills
       - run: npm run build
       - run: npm test
@@ -52,6 +64,13 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Exercise the published Joomla provider selected by the compatibility check
+        if: inputs.provider_version != ''
+        env:
+          PROVIDER_VERSION: ${{ inputs.provider_version }}
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts "@joomengine/joomla-mcp@$PROVIDER_VERSION"
+          node -e "const v = require('./node_modules/@joomengine/joomla-mcp/package.json').version; if (v !== process.env.PROVIDER_VERSION) throw Error('Unexpected Joomla provider ' + v)"
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: node test/cloud-live.mjs ${{ matrix.recipe }}

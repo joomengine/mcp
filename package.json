@@ -1,15 +1,31 @@
 {
   "name": "@joomengine/mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Operate JoomEngine Playground workspaces and build Joomla extensions with JCB.",
   "license": "Apache-2.0",
-  "repository": { "type": "git", "url": "git+https://github.com/joomengine/mcp.git" },
-  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joomengine/mcp.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
-  "engines": { "node": ">=22.16" },
-  "bin": { "joomengine-playground-mcp": "./dist/cli.js" },
+  "engines": {
+    "node": ">=22.16"
+  },
+  "bin": {
+    "joomengine-playground-mcp": "./dist/cli.js"
+  },
   "exports": "./dist/server.js",
-  "files": ["dist", "skills", "docs", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "skills",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "skills": "node scripts/skills.mjs",
     "build": "tsc -p tsconfig.json",

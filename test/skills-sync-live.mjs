@@ -63,7 +63,18 @@ try {
   const routing = await call('skills_capabilities', {});
   assert.equal(routing.revision, status.revision);
   assert.deepEqual(routing.unmappedTools, []);
-  for (const group of routing.capabilities) assert(group.available, 'No registered tools for ' + group.id);
+  const declared = JSON.parse(git('show', status.revision + ':registries/playground-mcp.json'));
+  for (const { id, tools: selectors } of declared.capabilities) {
+    const group = routing.capabilities.find(group => group.id === id);
+    assert(group?.available, 'No registered tools for ' + id);
+    const operations = group.operations.map(tool => tool.name);
+    for (const selector of selectors) {
+      const matched = selector.endsWith('*')
+        ? operations.some(name => name.startsWith(selector.slice(0, -1)))
+        : operations.includes(selector);
+      assert(matched, `Canonical Skills group ${id} has no advertised tool matching ${selector}`);
+    }
+  }
   const names = routing.capabilities.flatMap(capability => capability.operations.map(tool => tool.name));
   assert.deepEqual(names.sort(), tools.map(tool => tool.name).sort());
   for (const expectedHostTool of ['composer_tools', 'artifact_save', 'workspace_attach']) assert(names.includes(expectedHostTool));

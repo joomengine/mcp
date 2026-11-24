@@ -1,0 +1,134 @@
+name: Publish npm release
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json, .github/workflows/publish-release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        name: Resolve the package version and its release source
+        run: |
+          version=$(jq -er '.version' package.json)
+          tag="v$version"
+          # Manual recovery reuses the tagged source even after main moves forward.
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            git merge-base --is-ancestor "$tag^{commit}" HEAD
+            git switch --detach "$tag^{commit}"
+          fi
+          test "$(jq -r .version package.json)" = "$version"
+          test "$(jq -r '.packages[""].version' package-lock.json)" = "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run skills
+      - run: npm run build
+      - run: npm test
+      - name: Pack and install the tested distribution
+        run: |
+          archive=$(npm pack --ignore-scripts --json | jq -er '.[0].filename')
+          npm install --prefix "$RUNNER_TEMP/consumer" "./$archive"
+          "$RUNNER_TEMP/consumer/node_modules/.bin/joomengine-playground-mcp" --help
+          test -s "$RUNNER_TEMP/consumer/node_modules/@joomengine/mcp/skills/joomengine-jcb/SKILL.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-distribution
+          path: joomengine-mcp-*.tgz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-distribution
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Preserve the release tarball for publication and retries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$VERSION"
+          archive="joomengine-mcp-$VERSION.tgz"
+          repo="repos/$GITHUB_REPOSITORY"
+          if ! gh api "$repo/git/ref/tags/$tag" --silent 2>/dev/null; then
+            gh api -X POST "$repo/git/refs" -f "ref=refs/tags/$tag" -f "sha=$SOURCE_COMMIT" --silent
+          fi
+          test "$(gh api "$repo/commits/$tag" --jq .sha)" = "$SOURCE_COMMIT"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            flags=()
+            if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$tag" --generate-notes "${flags[@]}"
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fxq "$archive"; then
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p "$archive" --clobber
+          else
+            gh release upload "$tag" "$archive" --repo "$GITHUB_REPOSITORY"
+          fi
+          tar -xOzf "$archive" package/package.json | jq -e --arg version "$VERSION" '.name == "@joomengine/mcp" and .version == $version' >/dev/null
+      - name: Publish and verify the exact tarball on the public registry
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          archive="joomengine-mcp-$VERSION.tgz"
+          integrity="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+          url="https://registry.npmjs.org/@joomengine%2fmcp/$VERSION"
+          status=$(curl --silent --show-error --retry 3 --output manifest.json --write-out '%{http_code}' "$url")
+          case "$status" in
+            404)
+              flags=()
+              if [[ "$VERSION" == *-* ]]; then flags+=(--tag next); fi
+              npm publish "./$archive" --access public --provenance --ignore-scripts "${flags[@]}"
+              ;;
+            200) test "$(jq -er '.dist.integrity' manifest.json)" = "$integrity" ;;
+            *) echo "npm returned HTTP $status for the release manifest" >&2; exit 1 ;;
+          esac
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error "$url" -o manifest.json && jq -e --arg expected "$integrity" '.dist.integrity == $expected' manifest.json >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Published npm integrity could not be verified.' >&2
+          exit 1
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ $(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft) == true ]]; then
+            gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+          fi

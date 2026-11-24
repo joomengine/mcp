@@ -8,40 +8,43 @@
 | Client's browser | `workspace_attach` connects to the designated running owner in Chromium or Firefox | The client and agent share the same live files and database. Detach leaves the site running. |
 | JoomEngine Desktop | `workspace_attach` connects to the application's designated webview | The desktop profile retains its site. [Browser and desktop setup](docs/attach.md) |
 
-## Start from this checkout
+## Install from npm
 
-Use Node.js 22.16 or later, npm and Git on the machine that will host the agent's browser. On Linux the Playwright install command can install system dependencies.
-
-```sh
-git clone https://github.com/joomengine/mcp.git
-cd mcp
-```
-
-When testing a pull request, check out its branch here. For PR #1, run `git fetch origin pull/1/head && git switch --detach FETCH_HEAD`. Then build the checked-out version:
+Use Node.js 22.16 or newer. In the directory where you run your MCP client, install the server and the Chromium build that matches its Playwright dependency. The browser installation is needed when the agent launches its own Playground. On Linux, add `--with-deps` to install any missing system libraries.
 
 ```sh
-npm ci
-npm run skills
-npm run build
-npx playwright install --with-deps chromium
-mkdir -p artifacts
-export JOOMENGINE_ARTIFACT_DIR="$PWD/artifacts"
-node dist/cli.js
+npm install @joomengine/mcp
+npx --no-install playwright install chromium
+npx --no-install joomengine-playground-mcp --help
 ```
 
-The final command starts the stdio server. For an MCP client configuration, use `node` as the command and the absolute path printed by `realpath dist/cli.js` as its only argument. Pass `JOOMENGINE_ARTIFACT_DIR` through the MCP client's environment settings if the client starts from another shell.
-
-Alternatively, install the npm tarball built by the package verification workflow, or run `npm link` in the built checkout. Clients supporting the common `mcpServers` format can then launch the linked or installed executable from their PATH:
+For a client that supports `mcpServers`, the following configuration starts the published server over stdio:
 
 ```json
 {
   "mcpServers": {
     "joomengine": {
-      "command": "joomengine-playground-mcp",
-      "args": []
+      "command": "npx",
+      "args": ["--yes", "@joomengine/mcp"]
     }
   }
 }
+```
+
+A global installation with `npm install --global @joomengine/mcp` also exposes `joomengine-playground-mcp` on PATH. Use the client's environment settings for `JOOMENGINE_BROWSER_ENDPOINT` to attach to an existing browser or desktop and `JOOMENGINE_ARTIFACT_DIR` to exchange files. [npm package](https://www.npmjs.com/package/@joomengine/mcp)
+
+## Work from source
+
+```sh
+git clone https://github.com/joomengine/mcp.git
+cd mcp
+npm ci
+npm run skills
+npm run build
+npx --no-install playwright install chromium
+mkdir -p artifacts
+export JOOMENGINE_ARTIFACT_DIR="$PWD/artifacts"
+node dist/cli.js
 ```
 
 ## Build a component
@@ -80,3 +83,9 @@ npm pack
 ```
 
 The live checks use the hosted Playground and need network access. Prepack resolves the current canonical Skills revision and includes its full distribution and license. The Joomla providers retain their upstream licenses and release cycles. [Playground](https://github.com/joomengine/playground) · [JoomEngine Desktop](https://github.com/joomengine/joomengine) · [JoomEngine Skills](https://github.com/joomengine/skills)
+
+## Publish a version
+
+Run `npm version patch --no-git-tag-version` (or choose the intended minor or major increment) and merge `package.json` and `package-lock.json` into `main`. The **Publish npm release** workflow builds and tests the MCP, packages the current Skills revision and installs the tarball as a consumer. It records the source tag and exact tarball in a GitHub release, publishes to public npm with provenance, and verifies the registry integrity before making the GitHub release public. Stable releases use `latest` and prereleases use `next`. To resume the current version, run the same workflow from `main`. A retry uses the saved release tarball.
+
+Configure npm trusted publishing for GitHub organization `joomengine`, repository `mcp`, workflow `publish-release.yml`, and environment `release`. For the first publication, the workflow can also use the `NPM_TOKEN` secret in the GitHub `release` environment with permission to publish under `@joomengine`. [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)

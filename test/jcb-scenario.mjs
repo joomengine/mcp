@@ -57,16 +57,23 @@ export async function exerciseJcb(client, { replaceWorkspaceId } = {}) {
   const originalXml = JSON.parse(sourceField.rows[0].xml);
   const authoredXml = originalXml.replace(/maxlength="\d+"/, 'maxlength="117"');
   assert.notEqual(authoredXml, originalXml, 'Expected an editable JCB title-field length');
-  const saved = await call('jcb_save_records', { records: [
+  const definition = await call('jcb_form', { view: 'field', fields: ['xml'] });
+  assert.deepEqual(Object.keys(definition.schema.properties), ['xml']);
+  const versionRecord = { key: 'mcp-demo-version', view: 'joomla_component', match: { system_name: 'Demo J6' } };
+  const partial = await client.callTool({ name: 'jcb_save_records', arguments: { records: [
     { key: 'mcp-demo-title', view: 'field', guid: fieldGuid, fields: { xml: authoredXml } },
-    { key: 'mcp-demo-version', view: 'joomla_component', match: { system_name: 'Demo J6' }, fields: { component_version: '1.3.7' } }
-  ] });
-  assert.deepEqual(saved.results.map(r => r.status), ['applied', 'applied'], JSON.stringify(saved));
+    { ...versionRecord, fields: { missing_acceptance_field: 1 } }
+  ] } }, undefined, { timeout: 16 * 60_000 });
+  assert.equal(partial.isError, true);
+  assert.match(partial.content[0].text, /retry only the skipped keys/);
+  assert.deepEqual(partial.structuredContent.results.map(r => [r.key, r.status]), [['mcp-demo-title', 'applied'], ['mcp-demo-version', 'skipped']]);
   const verifySource = async () => {
     const field = await sql('SELECT xml FROM ' + tablePrefix + 'componentbuilder_field WHERE guid = ?', [fieldGuid]);
     assert.equal(JSON.parse(field.rows[0].xml), authoredXml);
   };
   await verifySource();
+  const retried = await call('jcb_save_records', { records: [{ ...versionRecord, fields: { component_version: '1.3.7' } }] });
+  assert.equal(retried.results[0].status, 'applied', JSON.stringify(retried));
   const author = async () => (await sql('SELECT component_version FROM ' + tablePrefix + 'componentbuilder_joomla_component WHERE id = ?', [demo.id])).rows[0];
   assert.equal((await author()).component_version, '1.3.7');
   const plugins = async () => new Set((await sql("SELECT element FROM " + tablePrefix + "extensions WHERE type = 'plugin' AND folder = 'webservices'")).rows.map(row => row.element));

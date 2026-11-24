@@ -98,7 +98,7 @@ export async function connectOwner(base: string) {
     if (replaceWorkspaceId !== undefined && replaceWorkspaceId !== previous) {
       throw new Error('The workspace changed before it could be restored.');
     }
-    const translated = replaceWorkspaceId ? await import(new URL('src/i18n.mjs', app).href) : undefined;
+    const translated = await import(new URL('src/i18n.mjs', app).href);
     const files = new DataTransfer();
     files.items.add(new File([archive], 'playground-site.zip', { type: 'application/zip' }));
     let sawChoice = false;
@@ -106,7 +106,14 @@ export async function connectOwner(base: string) {
     let interrupted = false;
     // Another client interaction during import revokes automatic continuation for this upload.
     const interaction = new AbortController();
-    const recordInteraction = (event: Event) => { if (event.isTrusted) interrupted = true; };
+    const recordInteraction = (event: Event) => {
+      if (!event.isTrusted) return;
+      interrupted = true;
+      if (event.type !== 'click' || !(event.target instanceof Element)) return;
+      const accept = event.target.closest('button[data-replace-choice="continue"]');
+      const dialog = accept?.closest('dialog[open][data-live-replacement="true"]');
+      if (dialog?.querySelector('#live-replacement-title')?.textContent === translated.t('lifecycle.replaceConfirm')) choiceHandled = true;
+    };
     document.addEventListener('click', recordInteraction, { capture: true, signal: interaction.signal });
     document.addEventListener('change', recordInteraction, { capture: true, signal: interaction.signal });
     const feedback = document.getElementById('header-feedback');
@@ -115,7 +122,10 @@ export async function connectOwner(base: string) {
       input.files = files.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
       await wait(async () => {
-        if (runtime.healthy && runtime.workspace.id !== previous) return true;
+        if (runtime.healthy && runtime.workspace.id !== previous) {
+          if (!choiceHandled) throw new Error('The owner workspace changed without confirming this restore.');
+          return true;
+        }
         const dialog = document.querySelector<HTMLDialogElement>('dialog[open][data-live-replacement="true"]');
         if (dialog) {
           sawChoice = true;

@@ -22,11 +22,12 @@ async function listen(server) {
 // The fixture uses the real Playground owner/companion implementation over two BroadcastChannel endpoints.
 // Hosted runs use the full deployment and its persistent filesystem.
 async function fixture(t) {
-  const modules = new Map(await Promise.all(['runtime-views.mjs', 'mcp.mjs'].map(async module => [
+  const modules = new Map(await Promise.all(['runtime-views.mjs', 'mcp.mjs', 'i18n.mjs', 'locales/en.mjs'].map(async module => [
     '/src/' + module, await readFile(path.join(process.env.PLAYGROUND_SOURCE, 'src', module)),
   ])));
-  const owner = `<script type="module">
+  const owner = `<button id="upload-site-button">Upload</button><input type="file" id="upload-site-file"><script type="module">
     import { createRuntimeViewHost } from './src/runtime-views.mjs';
+    import { t } from './src/i18n.mjs';
     const files = new Map();
     const runtime = {
       workspace: { id: 'existing-owner', root: '/', subscribe: () => () => {},
@@ -43,6 +44,7 @@ async function fixture(t) {
       healthy: true, baseUrl: location.origin + '/__site/fixture/', url: location.href,
       configuration: {siteName:'Browser-owned Joomla', storageKey:'attach-test', deployId:'jcb-mcp'}, installation:{},
       flush: async () => true,
+      exportSite: async () => ({filename:'fixture.zip',mimeType:'application/zip',bytes:new Uint8Array([80,75,3,4])}),
       getMcpConnection: async () => ({installed:true, token:'fixture-only'}),
       async request(_path, init) {
         if (new Headers(init.headers).get('X-Joomla-Token') !== 'fixture-only') return new Response(null,{status:401});
@@ -53,7 +55,17 @@ async function fixture(t) {
         return Response.json({jsonrpc:'2.0', id:rpc.id, result},{headers:{'Mcp-Session-Id':'fixture-session'}});
       },
     };
-    createRuntimeViewHost({getRuntime: () => runtime, baseURL: location.origin + '/'});
+    const host = createRuntimeViewHost({getRuntime: () => runtime, baseURL: location.origin + '/'});
+    document.getElementById('upload-site-file').onchange = () => {
+      const dialog = document.createElement('dialog');
+      dialog.dataset.liveReplacement = 'true';
+      const heading = document.createElement('h2');
+      heading.id = 'live-replacement-title'; heading.textContent = t('lifecycle.replaceConfirm');
+      const accept = document.createElement('button');
+      accept.dataset.replaceChoice = 'continue';
+      accept.onclick = () => { dialog.remove(); runtime.workspace.id = 'restored-owner'; host.update(); };
+      dialog.append(heading,accept); document.body.append(dialog); dialog.showModal();
+    };
   </script>`;
   const server = createServer((req, res) => {
     const module = modules.get(req.url);
@@ -137,6 +149,13 @@ test('attach to the selected running owner, preserve site and process across dis
   active = await attachWorkspace({endpoint,playgroundUrl:base});
   assert.equal((await active.call('workspace_info', {})).workspaceId, info.workspaceId);
   assert.equal((await active.call('file_read', {path:target})).content, content);
+  if (!hosted) {
+    const saved = await active.call('site_export', {});
+    await assert.rejects(active.call('site_restore', {id:saved.id, replaceWorkspaceId:'unrelated-owner'}), /does not match/);
+    assert.equal((await active.call('workspace_info', {})).workspaceId, info.workspaceId);
+    const restored = await active.call('site_restore', {id:saved.id, replaceWorkspaceId:info.workspaceId});
+    assert.deepEqual(restored, {workspaceId:'restored-owner', restored:true});
+  }
   await active.close();
   active = undefined;
   if (hosted && mode === 'chromium') await exerciseAttachedComponent(endpoint);

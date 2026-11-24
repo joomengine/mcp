@@ -28,7 +28,7 @@ For writes, use the upstream permission, plan, confirmation and read-back tools 
 
 ## JCB and generated extension actions
 
-Use the JCB + MCP recipe for native discovery of the site's published operations, and follow each returned input schema. JCB-built components can expose API actions after their generated webservices plugin is installed and enabled and the site catalogue is refreshed in **JoomEngine MCP → Operations → Refresh JCB definitions**. A native operating-system PHP worker job can be unavailable in WebAssembly. The Playground compiler uses the browser site's own administrator compiler flow. [Joomla and JCB discovery](https://github.com/joomengine/mcp_component/blob/main/docs/integrations/JCB.md) · [Playground skills](https://github.com/joomengine/skills/blob/main/testing/playground/README.md)
+Use the JCB + MCP recipe for native discovery of the site's published operations, and follow each returned input schema. In Playground, install the extension and its generated webservices plugin, enable the plugin and call `jcb_refresh_tools` with the component element, such as `{"component":"com_demo"}`. The installed MCP registers its routes and synchronizes its catalogue for that component. On a native Joomla server, **JoomEngine MCP → Operations → Refresh JCB definitions** can also inventory native CLI commands. The Playground compiler uses the browser site's own administrator compiler flow. [Joomla and JCB discovery](https://github.com/joomengine/mcp_component/blob/main/docs/integrations/JCB.md) · [Playground skills](https://github.com/joomengine/skills/blob/main/testing/playground/README.md)
 
 ## Reach a separate native Joomla site over Composer stdio
 

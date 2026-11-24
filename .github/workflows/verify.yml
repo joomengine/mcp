@@ -69,3 +69,40 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: node test/jcb-live.mjs
+  browser-attachment:
+    name: Attach and reconnect (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/checkout@v4
+        with:
+          repository: joomengine/playground
+          path: upstream-playground
+          persist-credentials: false
+      - if: matrix.browser == 'firefox'
+        uses: browser-actions/setup-firefox@v1
+      - name: Confirm attachment to an existing owner through its published protocol
+        env:
+          ATTACH_BROWSER: ${{ matrix.browser }}
+          PLAYGROUND_SOURCE: ${{ github.workspace }}/upstream-playground
+        run: |
+          if [ "$ATTACH_BROWSER" = chromium ]; then export ATTACH_EXECUTABLE="$(command -v google-chrome)"; fi
+          node --test test/attach-live.mjs
+      - name: Exercise the running site in the hosted Playground
+        env:
+          ATTACH_BROWSER: ${{ matrix.browser }}
+          ATTACH_HOSTED: '1'
+        run: |
+          if [ "$ATTACH_BROWSER" = chromium ]; then export ATTACH_EXECUTABLE="$(command -v google-chrome)"; fi
+          node --test test/attach-live.mjs

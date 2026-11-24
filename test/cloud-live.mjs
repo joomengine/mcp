@@ -1,5 +1,6 @@
 // Run against the published Playground or the trusted URL configured for this CLI.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -48,6 +49,16 @@ try {
     await call('file_write', { path, expectedRevision: null, content:
       '<!doctype html><title>Agent UI proof</title><label>Name<input id="name"></label><label>Project<select id="p"><option>One</option><option>Two</option></select></label>' +
       '<button id="check" onclick="document.querySelector(\'output\').textContent=document.querySelector(\'#name\').value+document.querySelector(\'#p\').value">Check</button><output></output>' });
+    const db = await call('database_query', { sql: 'SELECT ? AS proof', parameters: ['ok'] });
+    assert.equal(db.rows[0].proof, 'ok');
+    const mailbox = await call('mail_list');
+    assert(Array.isArray(mailbox.items));
+    const served = await call('site_request', { path });
+    assert.equal(served.status, 200);
+    const saved = await call('file_export', { path });
+    const received = await call('artifact_read', { id: saved.id });
+    const bytes = Buffer.from(received.base64, 'base64');
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), saved.sha256);
     await call('browser_navigate', { path });
     const state = await call('browser_inspect');
     assert.equal(state.title, 'Agent UI proof');

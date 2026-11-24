@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       fingerprint: ${{ steps.sources.outputs.fingerprint }}
+      provider_version: ${{ steps.sources.outputs.provider_version }}
       changed: ${{ steps.lookup.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Identify the deployed platform, provider releases and canonical sources
@@ -28,7 +29,11 @@ jobs:
           done
           curl -fsSL --retry 3 https://playground.joomengine.org/assets/manifest.json | jq -er '.sourceCommit' >> "$state"
           for name in mcp joomla-mcp; do
-            curl -fsSL --retry 3 "https://registry.npmjs.org/@joomengine%2f$name/latest" | jq -er '.version + " " + .dist.integrity' >> "$state"
+            package=$(curl -fsSL --retry 3 "https://registry.npmjs.org/@joomengine%2f$name/latest")
+            jq -er --arg name "$name" '$name + " " + .version + " " + .dist.integrity' <<< "$package" >> "$state"
+            if [[ "$name" == joomla-mcp ]]; then
+              echo "provider_version=$(jq -er '.version' <<< "$package")" >> "$GITHUB_OUTPUT"
+            fi
           done
           curl -fsSL --retry 3 https://repo.packagist.org/p2/joomengine/mcp-client.json | jq -er '.packages["joomengine/mcp-client"][0].source.reference' >> "$state"
           cat "$state" >> "$GITHUB_STEP_SUMMARY"
@@ -43,6 +48,8 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.changed == 'true'
     uses: ./.github/workflows/verify.yml
+    with:
+      provider_version: ${{ needs.resolve.outputs.provider_version }}
   desktop:
     needs: resolve
     if: needs.resolve.outputs.changed == 'true'

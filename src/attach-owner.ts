@@ -13,6 +13,13 @@ export async function connectOwner(base: string) {
     throw new Error('The selected site is stopped or unavailable. Resume it in the owner window.');
   }
 
+  // Fetch Headers are not a structured-clone type. The installed native MCP client passes
+  // Headers, while the Playground companion sends each request through BroadcastChannel.
+  const ownerRequest = runtime.request.bind(runtime);
+  runtime.request = (path: string, init: RequestInit = {}) => ownerRequest(path, {
+    ...init, ...(init.headers instanceof Headers ? { headers: [...init.headers.entries()] } : {}),
+  });
+
   function control<T extends HTMLElement>(id: string): T {
     const node = document.getElementById(id);
     if (!node) throw new Error('The owner window is missing the Playground control ' + id + '.');
@@ -35,7 +42,25 @@ export async function connectOwner(base: string) {
     };
     const edits = Object.entries(options).map(([key, value]) => {
       if (!Object.hasOwn(fields, key)) throw new Error('The Playground owner form cannot apply ' + key + ' to this live site.');
-      return { key, value, field: control<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(fields[key]!) };
+      const field = control<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(fields[key]!);
+      if (field instanceof HTMLInputElement && field.type === 'checkbox') {
+        if (typeof value !== 'boolean') throw new Error(key + ' requires true or false.');
+        return { field, apply() { field.checked = value; } };
+      }
+      let formatted: string;
+      if (key === 'languageTags') {
+        if (!Array.isArray(value) || !value.every(tag => typeof tag === 'string')) throw new Error('languageTags requires an array of language tags.');
+        formatted = value.join(',');
+      } else if (field instanceof HTMLTextAreaElement) {
+        formatted = JSON.stringify(value);
+      } else {
+        if (typeof value !== 'string') throw new Error(key + ' requires a string.');
+        if (field instanceof HTMLSelectElement && ![...field.options].some(option => option.value === value)) {
+          throw new Error('The selected deployment does not offer this ' + key + '.');
+        }
+        formatted = value;
+      }
+      return { field, apply() { field.value = formatted; } };
     });
     const dialog = control<HTMLDialogElement>('deploy-dialog');
     const edit = control<HTMLButtonElement>('edit-deployment');
@@ -47,19 +72,8 @@ export async function connectOwner(base: string) {
     }
     edit.click();
     await wait(() => dialog.open, 'The owner could not open deployment configuration.', 60_000);
-    for (const { key, value, field } of edits) {
-      if (field instanceof HTMLInputElement && field.type === 'checkbox') {
-        if (typeof value !== 'boolean') throw new Error(key + ' requires true or false.');
-        field.checked = value;
-      } else if (key === 'languageTags') {
-        if (!Array.isArray(value) || !value.every(tag => typeof tag === 'string')) throw new Error('languageTags requires an array of language tags.');
-        field.value = value.join(',');
-      } else if (field instanceof HTMLTextAreaElement) {
-        field.value = JSON.stringify(value);
-      } else {
-        if (typeof value !== 'string') throw new Error(key + ' requires a string.');
-        field.value = value;
-      }
+    for (const { field, apply } of edits) {
+      apply();
       field.dispatchEvent(new Event('input', { bubbles: true }));
       field.dispatchEvent(new Event('change', { bubbles: true }));
     }

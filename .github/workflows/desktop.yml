@@ -14,10 +14,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    name: JCB in JoomEngine Desktop (Qt WebEngine)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 40
+  desktop:
+    name: JCB in JoomEngine Desktop (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux Qt
+            runner: ubuntu-26.04
+          - platform: macOS Qt
+            runner: macos-15
+            asset: JoomEngine-*-macos-arm64.dmg
+          - platform: Windows WebView2
+            runner: windows-2022
+            asset: JoomEngine-*-windows-x64.zip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,17 +37,69 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run skills
       - run: npm run build
       - uses: actions/checkout@v4
+        if: runner.os == 'Linux'
         with:
           repository: joomengine/joomengine
           path: desktop
           persist-credentials: false
       - name: Build the desktop release executable
+        if: runner.os == 'Linux'
         working-directory: desktop
         run: |
           .github/scripts/install-linux-build-deps.sh qt6-base-dev qt6-webengine-dev libqt6webenginecore6-bin qt6-qpa-plugins dbus-x11
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target joomengine --parallel
-      - name: Attach to the hosted JCB site in the running desktop app
+      - name: Download and verify the shipped desktop package
+        if: runner.os != 'Linux'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_PACKAGE: ${{ matrix.asset }}
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'desktop-release'
+          gh release download --repo joomengine/joomengine --pattern $env:DESKTOP_PACKAGE --pattern SHA256SUMS --dir $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download the JoomEngine desktop release.' }
+          $assets = @(Get-ChildItem -Path $directory -Filter $env:DESKTOP_PACKAGE -File)
+          if ($assets.Count -ne 1) { throw 'Expected one desktop package for the selected platform.' }
+          $asset = $assets[0]
+          $digest = (Get-FileHash $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksums = Get-Content (Join-Path $directory 'SHA256SUMS')
+          if ($checksums -cnotcontains "$digest  $($asset.Name)") { throw 'Desktop package checksum mismatch.' }
+          "DESKTOP_ASSET=$($asset.FullName)" >> $env:GITHUB_ENV
+      - name: Mount and launch the macOS release
+        if: runner.os == 'macOS'
+        run: |
+          volume="$RUNNER_TEMP/JoomEngine-volume"
+          mkdir "$volume"
+          hdiutil attach -readonly -nobrowse -mountpoint "$volume" "$DESKTOP_ASSET"
+          trap 'hdiutil detach "$volume"' EXIT
+          ditto "$volume/JoomEngine.app" "$RUNNER_TEMP/JoomEngine.app"
+          codesign --verify --deep --strict "$RUNNER_TEMP/JoomEngine.app"
+          node test/desktop-live.mjs "$RUNNER_TEMP/JoomEngine.app/Contents/MacOS/JoomEngine"
+      - name: Open the portable Windows release in WebView2
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $client = 'Microsoft/EdgeUpdate/Clients/{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $installed = @("HKLM:/SOFTWARE/WOW6432Node/$client", "HKCU:/SOFTWARE/$client") |
+            ForEach-Object { Get-ItemPropertyValue -LiteralPath $_ -Name pv -ErrorAction SilentlyContinue } |
+            Where-Object { [version]$_ -gt [version]'0.0.0.0' }
+          if (-not $installed) {
+            $setup = Join-Path $env:RUNNER_TEMP 'WebView2Setup.exe'
+            Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $setup
+            $signature = Get-AuthenticodeSignature -LiteralPath $setup
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw 'The WebView2 bootstrapper signature is invalid.'
+            }
+            $process = Start-Process $setup -ArgumentList '/silent', '/install' -PassThru -Wait
+            if ($process.ExitCode -ne 0) { throw "WebView2 Evergreen setup failed ($($process.ExitCode))." }
+          }
+          $directory = Join-Path $env:RUNNER_TEMP 'JoomEngine'
+          Expand-Archive -LiteralPath $env:DESKTOP_ASSET -DestinationPath $directory
+          node test/desktop-live.mjs (Join-Path $directory 'JoomEngine.exe')
+      - name: Build, install and restore an extension in the Linux desktop app
+        if: runner.os == 'Linux'
         run: dbus-run-session -- xvfb-run -a node test/desktop-live.mjs desktop/build/joomengine

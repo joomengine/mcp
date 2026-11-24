@@ -1,0 +1,26 @@
+name: Verify Playground platform tools
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: platform-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  platform:
+    name: Edit, query, debug, capture mail and restore a saved backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: node test/platform-live.mjs

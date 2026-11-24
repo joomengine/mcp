@@ -14,7 +14,14 @@ export const jcbTools = [
     artifactId: { type: 'string', minLength: 1 }, url: { type: 'string', minLength: 1 }
   }),
   tool('extension_enable_plugin', 'Enable an installed plugin using the native Joomla plugin administrator model.', { folder: identifier, element: identifier }, ['folder', 'element']),
-  tool('jcb_refresh_tools', 'Synchronize the native Joomla MCP catalogue with currently installed JCB and enabled extension APIs.')
+  tool('jcb_save_records', 'Apply named JCB source records through Playground’s native Joomla form and JCB model overlays. Each record returns its own result and saved identity. Inspect applied and skipped results before retrying.', {
+    records: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'object', additionalProperties: false,
+      properties: { key: { type: 'string' }, view: identifier, guid: { type: 'string' }, match: { type: 'object' }, fields: { type: 'object' }, dependsOn: { type: 'array', items: { type: 'string' } } },
+      required: ['key', 'view', 'fields'] } }
+  }, ['records']),
+  tool('jcb_refresh_tools', 'Refresh native MCP definitions for the selected installed component’s registered webservices APIs.', {
+    component: { type: 'string', pattern: '^com_[a-z][a-z0-9_]*$' }
+  }, ['component'])
 ];
 
 // Serialized into both agent-owned and attached browser workspaces. Keep helpers local.
@@ -50,10 +57,80 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
     if (plugin?.status !== 'applied') throw new Error(plugin?.notice || 'Joomla could not enable the selected plugin.');
     return { enabled: true, folder: args.folder, element: args.element, id: plugin.id };
   }
+  if (operation === 'jcb_save_records') {
+    if (!Array.isArray(args.records) || !args.records.length || args.records.length > 50) throw new Error('Supply between one and fifty JCB records.');
+    const { normalizeDeploymentOverlays } = await import(new URL('src/deployment-overlays.mjs', base).href);
+    const { applyJoomlaOverlays } = await import(moduleUrl);
+    const records = normalizeDeploymentOverlays(args.records.map(r => ({ ...r, kind: 'record', component: 'com_componentbuilder' })));
+    return applyJoomlaOverlays(runtime, records, { admin: runtime.installation?.administrator });
+  }
   if (operation === 'jcb_refresh_tools') {
-    const { runStartupCommand } = await import(moduleUrl);
-    const result = await runStartupCommand(runtime, ['joomla:mcp:jcb-sync']);
-    return { refreshed: true, output: String(result.output ?? '').slice(-8192) };
+    if (typeof args.component !== 'string' || !/^com_[a-z][a-z0-9_]{0,95}$/.test(args.component)) throw new Error('Select an installed Joomla component.');
+    const { buildPhpProgram, parseProvisioningResult } = await import(moduleUrl);
+    // Native Operations delegates discovery to a PHP child process. Browser PHP
+    // runs the same installed registration and synchronization classes in one request.
+    const script = String.raw`<?php
+use Joomla\CMS\Application\ApiApplication;
+use Joomla\CMS\Event\Application\BeforeApiRouteEvent;
+use Joomla\CMS\Extension\ExtensionHelper;
+use Joomla\CMS\Factory;
+use Joomla\CMS\Plugin\PluginHelper;
+use Joomla\CMS\Router\ApiRouter;
+use Joomla\Event\DispatcherInterface;
+use VDM\Component\JoomEngineMcp\Administrator\Database\JoomlaStore;
+use VDM\Component\JoomEngineMcp\Administrator\Installer\Assets;
+use VDM\Component\JoomEngineMcp\Administrator\Jcb\ApiRegistry;
+use VDM\Component\JoomEngineMcp\Administrator\Jcb\CatalogueSynchronizer;
+use VDM\Component\JoomEngineMcp\Administrator\Jcb\GeneratedApiInventory;
+use VDM\Component\JoomEngineMcp\Administrator\Jcb\RegistrationObserver;
+use VDM\Component\JoomEngineMcp\Administrator\Security\JoomlaPrincipal;
+try {
+    $root = playgroundRoot($playground);
+    [$app, $container, $db] = playgroundApplication($root, true);
+    $user = playgroundDataAdministrator($root, $playground, $app, $container, $db);
+    $app->bootComponent('com_joomengine_mcp');
+    require_once JPATH_ADMINISTRATOR . '/components/com_joomengine_mcp/autoload.php';
+    $principal = new JoomlaPrincipal($user);
+    $target = $playground['component'];
+    if (!$principal->authorise('core.manage', 'com_joomengine_mcp') || !$principal->authorise('core.admin', 'com_joomengine_mcp')
+        || !$principal->authorise('mcp.access', 'com_joomengine_mcp') || !$principal->authorise('core.admin', $target)) {
+        throw new RuntimeException('The current Joomla identity cannot refresh these definitions.');
+    }
+    $db->setQuery("SELECT type, element, enabled FROM #__extensions WHERE type = 'component' AND element = " . $db->quote($target));
+    $core = array_map(static fn($e) => $e[1], array_filter(ExtensionHelper::getCoreExtensions(), static fn($e) => $e[0] === 'component'));
+    $components = GeneratedApiInventory::components($db->loadAssocList(), $core);
+    if ($components !== [$target]) throw new RuntimeException('Select an enabled third-party component or JCB.');
+    // The native seed updater owns all records under a synchronized provider.
+    // A WASM API inventory cannot replace previously imported native CLI targets.
+    if ($target === 'com_componentbuilder') {
+        $db->setQuery("SELECT COUNT(*) FROM #__joomengine_mcp_target t JOIN #__joomengine_mcp_provider p ON p.id=t.provider_id WHERE p.name='jcb.installed'");
+        if ((int) $db->loadResult() > 0) throw new RuntimeException('This JCB catalogue also owns native CLI targets. Refresh this provider on its native Joomla host to preserve them.');
+    }
+    $api = $container->get(ApiApplication::class);
+    $api->loadIdentity($user);
+    Factory::$application = $api;
+    try {
+        $router = new ApiRouter($api);
+        $dispatcher = $container->get(DispatcherInterface::class);
+        PluginHelper::importPlugin('webservices', null, true, $dispatcher);
+        $owners = (new RegistrationObserver())->dispatch($dispatcher,
+            new BeforeApiRouteEvent('onBeforeApiRoute', ['router' => $router, 'subject' => $api]),
+            static fn() => $router->getRoutes());
+        $routes = (new ApiRegistry($router, $owners, $components))->inventory();
+        $inventory = GeneratedApiInventory::enrich($routes, JPATH_ADMINISTRATOR . '/components', JPATH_ROOT . '/api/components');
+    } finally { Factory::$application = $app; }
+    $store = new JoomlaStore($db);
+    $changes = (new CatalogueSynchronizer($store, [new Assets($db, $store), 'synchronize']))->synchronize([], $inventory, $principal);
+    playgroundFinish(['ok' => true, 'refreshed' => true, 'component' => $target, 'apiRoutes' => $changes['apiRoutes'],
+        'unsupportedRoutes' => $changes['unsupportedRoutes'], 'revision' => $changes['revision']]);
+} catch (Throwable $error) { playgroundFinish(['ok' => false, 'error' => $error->getMessage()]); }`;
+    const source = await buildPhpProgram('customize', { root: runtime.documentRoot, component: args.component, admin: runtime.installation?.administrator }, async (name: string) => {
+      if (name === 'customize') return script;
+      const res = await fetch(new URL('src/joomla/php/common.php', base));
+      if (!res.ok) throw new Error('Cannot load Playground’s Joomla bootstrap.');
+      return res.text();
+    });
+    return parseProvisioningResult(await runtime.runPhp(source, { timeoutMs: 600_000 }));
   }
   if (operation !== 'jcb_list_components' && operation !== 'jcb_compile') throw new Error('Unknown JCB operation.');
   const route = 'administrator/index.php?option=com_componentbuilder&view=compiler';

@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ResourceListChangedNotificationSchema, PromptListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { zipSync } from 'fflate';
+import { gitAdvertisement, gitEndpoint } from './skills-endpoints.mjs';
 
 test('each initialized session receives one resource and prompt change per observed Skills revision', async t => {
   const cache = await mkdtemp(join(tmpdir(), 'skills-notify-'));
@@ -16,7 +17,7 @@ test('each initialized session receives one resource and prompt change per obser
   let revision = 'a'.repeat(40);
   let lastArchive;
   t.mock.method(globalThis, 'fetch', async url => {
-    if (url.endsWith('/commits/HEAD')) return new Response(revision);
+    if (url === gitEndpoint) return new Response(gitAdvertisement(revision));
     assert.equal(url, 'https://codeload.github.com/joomengine/skills/zip/' + revision);
     const path = 'workflows/' + revision[0] + '.md';
     const files = { 'SKILL.md': 'Root', 'AGENTS.md': 'Agents', LICENSE: 'License',

@@ -26,7 +26,7 @@ async function fixture(t) {
   const modules = new Map(await Promise.all(['runtime-views.mjs', 'mcp.mjs', 'i18n.mjs', 'locales/en.mjs'].map(async module => [
     '/src/' + module, await readFile(path.join(process.env.PLAYGROUND_SOURCE, 'src', module)),
   ])));
-  const owner = `<title>Primary owner</title><button style="position:fixed;top:0;left:0;z-index:5" id="open-idle" onclick="window.open('/?second=1','idle-owner')">Open idle owner</button><iframe id="site-frame" src="/__site/fixture/"></iframe>
+  const owner = `<title>Primary owner</title><button id="reload-owner" onclick="setTimeout(()=>location.reload(),30)">Reload owner</button><button style="position:fixed;top:0;left:0;z-index:5" id="open-idle" onclick="window.open('/?second=1','idle-owner')">Open idle owner</button><iframe id="site-frame" src="/__site/fixture/"></iframe>
     <iframe class="jec-ai-frame" sandbox="allow-scripts" srcdoc="<button style='position:fixed;inset:0' onclick='parent.postMessage(1,&quot;*&quot;)'>AI panel action</button>"></iframe>
     <output id="ai-proof"></output><button id="upload-site-button">Upload</button><input type="file" id="upload-site-file"><script type="module">
     import { createRuntimeViewHost } from './src/runtime-views.mjs';
@@ -261,6 +261,18 @@ test('attach to the selected running owner, preserve site and process across dis
     await assert.rejects(attachWorkspace({endpoint,playgroundUrl:base}),/workspace_list/);
     active=await attachWorkspace({endpoint,playgroundUrl:base,tabId:first.tabs[0].tabId});
     assert.equal((await active.call('workspace_info',{})).workspaceId,'restored-owner');
+    await active.call('browser_click',{scope:'playground',selector:'#reload-owner'});
+    await delay(500);
+    await assert.rejects(active.call('file_write',{path:'/wrong-owner',content:'never replay',expectedRevision:null}),/workspace_close, workspace_list, then workspace_attach/);
+    await active.close();
+    active=undefined;
+    const renewed=(await listWorkspaceTabs({endpoint,playgroundUrl:base})).tabs.find(tab=>tab.title==='Primary owner');
+    assert(renewed);
+    if (mode==='firefox') assert.notEqual(renewed.tabId,first.tabs[0].tabId);
+    active=await attachWorkspace({endpoint,playgroundUrl:base,tabId:renewed.tabId});
+    assert.equal((await active.call('workspace_info',{})).workspaceId,'existing-owner');
+    await active.call('file_write',{path:'/wrong-owner',content:'first authorized write after reattachment',expectedRevision:null});
+
 
   }
   if (hosted) {

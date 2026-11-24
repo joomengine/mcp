@@ -8,6 +8,7 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { GetPromptResult, ListResourcesResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 
 const distribution = new SkillDistribution();
+export const onSkillRevisionChanged = (listener: () => void) => distribution.onRevisionChanged(listener);
 export const skillStatus = (refresh = false) => distribution.status(refresh);
 const base = 'joomengine://skills/';
 const pageSize = 50;
@@ -184,7 +185,7 @@ export async function getSkillPrompt(name: string): Promise<GetPromptResult> {
     readFrom(catalog, uriFor(rootEntry)), readFrom(catalog, uriFor(workflow.path)),
   ]);
   return { description: workflow.description, messages: [
-    { role: 'user', content: { type: 'text', text: 'Follow the bundled JCB workflow for the requested task. Read linked references as needed by resolving relative links against the containing resource URI.' } },
+    { role: 'user', content: { type: 'text', text: 'Follow the canonical JoomEngine workflow for the requested task. Read linked references as needed by resolving relative links against the containing resource URI.' } },
     { role: 'user', content: { type: 'resource', resource: root } },
     { role: 'user', content: { type: 'resource', resource: task } },
   ] };

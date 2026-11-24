@@ -109,6 +109,8 @@ export class SkillDistribution {
   private source: Source = 'bundled';
   private checkedAt = 0;
   private remoteRevision?: string;
+  private observedRevision?: string;
+  private readonly revisionListeners = new Set<() => void>();
   private error?: string;
 
   constructor(options: Options = {}) {
@@ -118,6 +120,11 @@ export class SkillDistribution {
     this.offline = options.offline ?? process.env.JOOMENGINE_SKILLS_OFFLINE === '1';
     this.request = options.request ?? fetch;
     this.now = options.now ?? Date.now;
+  }
+
+  onRevisionChanged(listener: () => void) {
+    this.revisionListeners.add(listener);
+    return () => this.revisionListeners.delete(listener);
   }
 
   private directory() { return join(this.cache, this.bundled.revision); }
@@ -199,6 +206,11 @@ export class SkillDistribution {
       this.update ??= this.refresh().finally(() => { this.update = undefined; });
     }
     await this.update;
+    const previous = this.observedRevision;
+    this.observedRevision = this.current.revision;
+    if (previous !== undefined && previous !== this.observedRevision) {
+      for (const listener of this.revisionListeners) listener();
+    }
     return this.current;
   }
 

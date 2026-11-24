@@ -57,8 +57,9 @@ export async function exerciseJcb(client, { replaceWorkspaceId } = {}) {
   const originalXml = JSON.parse(sourceField.rows[0].xml);
   const authoredXml = originalXml.replace(/maxlength="\d+"/, 'maxlength="117"');
   assert.notEqual(authoredXml, originalXml, 'Expected an editable JCB title-field length');
-  const definition = await call('jcb_form', { view: 'field', fields: ['xml'] });
-  assert.deepEqual(Object.keys(definition.schema.properties), ['xml']);
+  const definition = await call('jcb_form', { view: 'field', fields: ['datatype'] });
+  assert.deepEqual(Object.keys(definition.schema.properties), ['datatype']);
+  assert.ok(definition.schema.properties.datatype.oneOf.some(choice => choice.const === 'VARCHAR'));
   const versionRecord = { key: 'mcp-demo-version', view: 'joomla_component', match: { system_name: 'Demo J6' } };
   const partial = await client.callTool({ name: 'jcb_save_records', arguments: { records: [
     { key: 'mcp-demo-title', view: 'field', guid: fieldGuid, fields: { xml: authoredXml } },

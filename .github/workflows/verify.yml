@@ -69,6 +69,7 @@ jobs:
       - run: npm run skills
       - run: npm run build
       - run: npx playwright install --with-deps chromium
+      - run: node test/jcb-compiler.mjs
       - run: node test/jcb-live.mjs
   browser-attachment:
     name: Attach and reconnect (${{ matrix.browser }})

@@ -18,7 +18,7 @@ const keys: Record<string, [string, number, string]> = {
 };
 
 export const usesNativeInput = (name: string) =>
-  ['browser_screenshot', 'browser_pointer', 'browser_keyboard'].includes(name);
+  ['browser_screenshot', 'browser_pointer', 'browser_keyboard', 'browser_scroll'].includes(name);
 
 /** Render and interact in the selected tab only. A separate native protocol is needed for the editor's opaque AI iframe. */
 export async function browserInput(
@@ -66,7 +66,14 @@ export async function browserInput(
         });
       }
       const stored = await invoke('artifact_upload_finish', { id, sha256 });
-      const receipt = { ...stored, mimeType: 'image/png', width: region.width, height: region.height };
+      const receipt = {
+        ...stored,
+        mimeType: 'image/png',
+        width: region.width,
+        height: region.height,
+        pixelWidth: bytes.readUInt32BE(16),
+        pixelHeight: bytes.readUInt32BE(20)
+      };
       return {
         structuredContent: receipt,
         content: [
@@ -78,6 +85,25 @@ export async function browserInput(
       await invoke('artifact_release', { id }).catch(() => {});
       throw error;
     }
+  }
+  if (name === 'browser_scroll') {
+    const x = region.x + args.x,
+      y = region.y + args.y,
+      deltaX = args.deltaX ?? 0,
+      deltaY = args.deltaY;
+    if (firefoxContext)
+      await request('input.performActions', {
+        context: firefoxContext,
+        actions: [
+          {
+            type: 'wheel',
+            id: 'je-wheel',
+            actions: [{ type: 'scroll', origin: 'viewport', x, y, deltaX, deltaY }]
+          }
+        ]
+      });
+    else await request('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX, deltaY });
+    return { applied: true };
   }
   if (name === 'browser_pointer') {
     const x = region.x + args.x,

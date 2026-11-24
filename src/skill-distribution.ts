@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +21,7 @@ export type Snapshot = {
   read: (path: string) => Promise<Buffer>;
 };
 type Source = 'bundled' | 'cached' | 'upstream';
-type Receipt = { checkedAt: number; revision: string; digest?: string };
+const cacheEntry = /^(\d{13})-([a-f0-9]{40})-(bundled|[a-f0-9]{64}\.zip)$/;
 type Options = { bundle?: string; cache?: string; offline?: boolean; request?: typeof fetch; now?: () => number };
 
 function validPath(path: string) {
@@ -105,6 +105,7 @@ export class SkillDistribution {
   private update?: Promise<void>;
   private bundled!: Snapshot;
   private current!: Snapshot;
+  private archive?: Buffer;
   private source: Source = 'bundled';
   private checkedAt = 0;
   private remoteRevision?: string;
@@ -128,18 +129,43 @@ export class SkillDistribution {
       read: path => readFile(join(this.bundle, 'joomengine-jcb', path)),
     });
     this.current = this.bundled;
+    for (const name of await this.cacheEntries()) {
+      const [, at, revision, suffix] = name.match(cacheEntry)!;
+      if (Number(at) > this.now()) continue;
+      try {
+        if (suffix === 'bundled') {
+          if (revision !== this.bundled.revision) continue;
+        } else {
+          const bytes = await readFile(join(this.directory(), name));
+          if (bytes.length > maxArchive || digest(bytes) + '.zip' !== suffix) continue;
+          this.current = await openArchive(bytes, revision);
+          this.archive = bytes;
+          this.source = 'cached';
+        }
+        this.checkedAt = Number(at);
+        this.remoteRevision = revision;
+        return;
+      } catch { /* Try the preceding verified snapshot if this file is damaged or rotated. */ }
+    }
+  }
+
+  private async cacheEntries() {
     try {
-      const receipt: Receipt = JSON.parse(await readFile(join(this.directory(), 'current.json'), 'utf8'));
-      if (!sha.test(receipt.revision) || !(receipt.checkedAt > 0 && receipt.checkedAt <= this.now())) return;
-      if (receipt.revision !== this.bundled.revision) {
-        const bytes = await readFile(join(this.directory(), receipt.revision + '.zip'));
-        if (bytes.length > maxArchive || digest(bytes) !== receipt.digest) return;
-        this.current = await openArchive(bytes, receipt.revision);
-        this.source = 'cached';
-      }
-      this.checkedAt = receipt.checkedAt;
-      this.remoteRevision = receipt.revision;
-    } catch { /* The npm bundle remains available on a fresh or damaged cache. */ }
+      return (await readdir(this.directory())).filter(name => cacheEntry.test(name)).sort().reverse();
+    } catch {
+      return [];
+    }
+  }
+
+  private async cacheSnapshot() {
+    const directory = this.directory();
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const suffix = this.archive ? digest(this.archive) + '.zip' : 'bundled';
+    const filename = this.checkedAt + '-' + this.current.revision + '-' + suffix;
+    // Ordering by observation time keeps a slow process from replacing a newer revision.
+    await replaceFile(join(directory, filename), this.archive ?? '');
+    const old = (await this.cacheEntries()).slice(2);
+    await Promise.all(old.map(name => rm(join(directory, name), { force: true })));
   }
 
   private async refresh() {
@@ -148,25 +174,19 @@ export class SkillDistribution {
       const revision = (await download(commitEndpoint, this.request, 'application/vnd.github.sha', 100)).toString().trim();
       if (!sha.test(revision)) throw new Error('GitHub returned an invalid Skills revision');
       this.remoteRevision = revision;
-      let bytes: Buffer | undefined;
       if (revision === this.bundled.revision) {
         this.current = this.bundled;
         this.source = 'bundled';
+        this.archive = undefined;
       } else if (revision !== this.current.revision) {
-        bytes = await download(archiveEndpoint + revision, this.request, 'application/zip', maxArchive);
+        const bytes = await download(archiveEndpoint + revision, this.request, 'application/zip', maxArchive);
         const snapshot = await openArchive(bytes, revision);
         this.current = snapshot;
+        this.archive = bytes;
         this.source = 'upstream';
       }
       this.error = undefined;
-      const directory = this.directory();
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      // An archive becomes visible before its receipt. Concurrent processes can safely use each immutable archive.
-      const archive = join(directory, revision + '.zip');
-      if (bytes) await replaceFile(archive, bytes);
-      const receipt: Receipt = { revision, checkedAt: this.checkedAt };
-      if (revision !== this.bundled.revision) receipt.digest = digest(bytes ?? await readFile(archive));
-      await replaceFile(join(directory, 'current.json'), JSON.stringify(receipt));
+      await this.cacheSnapshot();
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
     }

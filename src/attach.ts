@@ -1,7 +1,9 @@
 import type { Workspace } from './browser.js';
 import { browserHandlerSource } from './browser-router.js';
 import { connectOwner } from './attach-owner.js';
+import { debuggerDialogs, withBrowserDialogs, actionDialogs } from './browser-dialogs.js';
 import { browserInput, usesNativeInput } from './browser-input.js';
+import { cdpTabs, debuggerAddress, discoverTabs, selectedFirefoxTab, selectedTab } from './attach-discovery.js';
 import { DebugConnection } from './attach-wire.js';
 
 export interface AttachOptions {
@@ -21,19 +23,6 @@ function localEndpoint(address: string): URL {
   return url;
 }
 
-function selectedTab(tabs: Array<{ id: string; url: string }>, base: URL, id?: string) {
-  const candidates = tabs.filter(tab => {
-    try {
-      const url = new URL(tab.url);
-      return url.origin === base.origin && (url.pathname === base.pathname || url.pathname === base.pathname + 'index.html')
-        && !url.searchParams.has('view') && (!id || id === tab.id);
-    } catch { return false; }
-  });
-  if (!candidates.length) throw new Error('Open the running Playground owner window at ' + base.href + ' in the selected browser.');
-  if (candidates.length > 1) throw new Error('Multiple Playground windows match. Select tabId from: ' + candidates.map(tab => tab.id).join(', '));
-  return candidates[0]!;
-}
-
 function checkedCDP(result: any) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
   return result.result;
@@ -45,21 +34,15 @@ function checkedBiDi(result: any) {
 }
 
 interface RuntimeConnection {
+  list(): Promise<unknown>;
   invoke(operation: string, args: Record<string, unknown>, fn: string): Promise<unknown>;
   detach(): Promise<void>;
 }
 
 // Using the page's debugger socket also supports Qt builds exposing only page targets.
 async function connectCDP(endpoint: URL, base: URL, tabId?: string): Promise<RuntimeConnection> {
-  const discovery = await fetch(new URL('json/list', endpoint), { redirect: 'error', signal: AbortSignal.timeout(10_000) });
-  if (!discovery.ok) throw new Error(`Browser target discovery returned HTTP ${discovery.status}.`);
-  const tabs = await discovery.json() as Array<{ id: string; type: string; url: string; webSocketDebuggerUrl: string }>;
-  const tab = selectedTab(tabs.filter(tab => tab.type === 'page'), base, tabId);
-  const address = new URL(tabs.find(item => item.id === tab.id)!.webSocketDebuggerUrl);
-  if (address.protocol !== 'ws:' || address.host !== endpoint.host || address.username || address.password) {
-    throw new Error('The selected browser returned a different debugger endpoint.');
-  }
-  const wire = await DebugConnection.open(address);
+  const tab = selectedTab(await cdpTabs(endpoint), base, tabId);
+  const wire = await DebugConnection.open(debuggerAddress(tab, endpoint));
   try {
     const reply = await wire.request('Runtime.evaluate', {
       expression: '(' + connectOwner.toString() + ')(' + JSON.stringify(base.href) + ')',
@@ -71,10 +54,13 @@ async function connectCDP(endpoint: URL, base: URL, tabId?: string): Promise<Run
       objectId, functionDeclaration, arguments: values.map(value => ({ value })),
       awaitPromise: true, returnByValue: true,
     }))?.value;
-    const invoke = (operation: string, args: Record<string, unknown>) => call(browserHandlerSource(operation), [operation,args]);
+    const invoke = (operation: string, args: Record<string, unknown>) => call(browserHandlerSource(operation), [operation, args]);
+    const request = wire.request.bind(wire);
+    const dialogs = debuggerDialogs(request, wire.on.bind(wire));
     return {
-      invoke: (operation, args, fn) => usesNativeInput(operation)
-        ? browserInput(operation, args, invoke, (method, params) => wire.request(method, params)) : call(fn, [operation,args]),
+      list: () => discoverTabs(endpoint, base),
+      invoke: (operation, args, fn) => withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
+        ? browserInput(operation, args, invoke, request) : call(fn, [operation, args])),
       async detach() {
         try { await call('function () { this.dispose(); }', []); }
         finally { wire.close(); }
@@ -91,10 +77,9 @@ async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise
     finally { wire.close(); }
   }
   try {
-    await wire.request('session.new', { capabilities: {} }, 15_000);
+    await wire.request('session.new', { capabilities: { alwaysMatch: { unhandledPromptBehavior: { default: 'ignore' } } } }, 15_000);
     active = true;
-    const { contexts } = await wire.request('browsingContext.getTree', { maxDepth: 0 });
-    const tab = selectedTab(contexts.map((context: { context: string; url: string }) => ({ id: context.context, url: context.url })), base, tabId);
+    const tab = await selectedFirefoxTab(wire, base, tabId);
     const reply = await wire.request('script.callFunction', {
       functionDeclaration: connectOwner.toString(), arguments: [{ type: 'string', value: base.href }],
       target: { context: tab.id }, awaitPromise: true, resultOwnership: 'root',
@@ -111,9 +96,12 @@ async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise
       const reply = await call('async function(op, input) { return JSON.stringify(await (' + fn + ').call(this, op, JSON.parse(input))); }', [operation, JSON.stringify(args)]);
       return reply.type === 'undefined' ? undefined : JSON.parse(reply.value);
     };
+    const request = wire.request.bind(wire);
+    const dialogs = debuggerDialogs(request, wire.on.bind(wire), tab.id);
     return {
-      invoke: (operation, args, fn) => usesNativeInput(operation)
-        ? browserInput(operation, args, invoke, (method, params) => wire.request(method, params), tab.id) : invoke(operation,args,fn),
+      list: () => discoverTabs(endpoint, base, wire),
+      invoke: (operation, args, fn) => withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
+        ? browserInput(operation, args, invoke, request, tab.id) : invoke(operation, args, fn)),
       async detach() {
         try { await call('function () { this.dispose(); }', []); }
         finally { await endSession(); }
@@ -122,16 +110,27 @@ async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise
   } catch (error) { await endSession().catch(() => {}); throw error; }
 }
 
-export async function attachWorkspace(options: AttachOptions): Promise<Workspace> {
+function addresses(options: AttachOptions) {
   const endpoint = localEndpoint(options.endpoint);
   const base = new URL(options.playgroundUrl || 'https://playground.joomengine.org/');
   if (base.username || base.password || base.hash || base.search || !base.pathname.endsWith('/')
       || !(base.protocol === 'https:' || base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname))) {
     throw new Error('Use the trusted HTTPS Playground base URL, including its trailing slash. Local test servers may use HTTP.');
   }
+  return { endpoint, base };
+}
+
+export async function listWorkspaceTabs(options: AttachOptions) {
+  const { endpoint, base } = addresses(options);
+  return discoverTabs(endpoint, base);
+}
+
+export async function attachWorkspace(options: AttachOptions): Promise<Workspace> {
+  const { endpoint, base } = addresses(options);
   const connection = await (endpoint.protocol === 'http:' ? connectCDP : connectFirefox)(endpoint, base, options.tabId);
   let closed = false;
   return {
+    listAttachedTabs: () => connection.list(),
     async call(operation, args) {
       if (closed) throw new Error('This Playground connection was detached.');
       return connection.invoke(operation, args, browserHandlerSource(operation));

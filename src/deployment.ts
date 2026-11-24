@@ -7,7 +7,7 @@ const strings = { type: 'array', items: text };
 const bool = { type: 'boolean' };
 const version = { ...text, description: 'Select a version from deployment_catalog.' };
 export const deploymentFields = {
-  siteName: text, initialPath: text, autoLogin: bool, language: text, multilingual: bool, languageTags: strings,
+  siteName: text, initialPath: text, autoLogin: bool, hideToolbar: bool, language: text, multilingual: bool, languageTags: strings,
   extensions: list, startupCommands: { type: 'array', items: strings }, languages: list, menus: list,
   template: { type: ['object', 'null'] }, content: { type: ['object', 'null'] }, overlays: list,
   phpVersion: version, phpSettings: object
@@ -22,6 +22,7 @@ const source = { type: 'object', additionalProperties: false, properties: {
 const selector = {
   type: 'object', additionalProperties: false, properties: {
     kind: { type: 'string', enum: ['component', 'record', 'plugin', 'module'] },
+    key: { ...text, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$', description: 'Optional stable key for the captured overlay.' },
     component: text, view: text, element: text, folder: text, clientId: { type: 'integer' }, id: { type: 'integer', minimum: 1 },
     uiLanguage: text
   }
@@ -51,12 +52,12 @@ export const deploymentTools = [
   }, ['id', 'expectedRevision']),
   tool('deployment_clone', 'Copy the current Joomla files and database into an independent installation. Optionally change site settings, upgrade a compatible JCB version, or rotate the sandbox administrator in the copy. The source stays resumable.', {
     replaceWorkspaceId: text, configuration: { type: 'object', additionalProperties: false, properties: {
-      ...deploymentFields, hideToolbar: bool, jcbVersion: version, jcbPackage: object, admin: object
+      ...deploymentFields, jcbVersion: version, jcbPackage: object, admin: object
     } }
   }, ['replaceWorkspaceId']),
   tool('deployment_launch', 'Use a built-in, saved, shared or imported recipe to start an independent deployment in this owner. Export the current site first if needed. Replacing a running site requires its workspaceId.', {
     source, replaceWorkspaceId: text
-  }, ['source', 'replaceWorkspaceId']),
+  }, ['source']),
 ];
 
 type Data = Record<string, any>;
@@ -99,10 +100,10 @@ export async function deploymentDispatch(runtime: Data, operation: string, args:
     return { applied: true, siteName: runtime.configuration.siteName, language: runtime.configuration.language };
   }
   if (operation === 'deployment_launch' || operation === 'deployment_clone') {
-    if (args.replaceWorkspaceId !== workspaceId) throw new Error('The supplied workspaceId does not match the current site.');
+    if (args.replaceWorkspaceId !== (workspaceId ?? undefined)) throw new Error('The supplied workspaceId does not match the current site.');
     if (!app.getOwnerWorkspace) throw new Error('Use a current Playground owner to start an independent deployment in this window.');
     if (operation === 'deployment_clone') return owner(workspaceId, 'clone', args.configuration ?? {});
-    return app.getOwnerWorkspace().perform('open', { ...args.source, replaceWorkspaceId: workspaceId });
+    return app.getOwnerWorkspace().perform('open', { ...args.source, replaceWorkspaceId: args.replaceWorkspaceId });
   }
   const registry = await load('deployment-registry');
   const key = registry.deploymentRegistryKey(base);
@@ -116,11 +117,18 @@ export async function deploymentDispatch(runtime: Data, operation: string, args:
   const config = await load('config');
   async function resolveSource() {
     if (!args.source || Object.keys(args.source).length === 0) {
-      const { loadDeployCatalog } = await load('deploys');
-      const { deploys } = await loadDeployCatalog();
       const c = runtime.configuration;
-      const preset = deploys.find((d: Data) => d.id === c.deployId || d.id === c.sourceDeployId);
-      const requirements = c.deploymentRecipe?.requirements ?? (preset ? { ...preset.requirements, joomla: preset.joomla } : undefined);
+      if (!c) {
+        if (!owner) throw new Error('Select a deployment or start a site to export the current configuration.');
+        return owner(workspaceId, 'selectedRecipe');
+      }
+      let requirements = c.deploymentRecipe?.requirements;
+      if (!requirements) {
+        const { loadDeployCatalog } = await load('deploys');
+        const { deploys } = await loadDeployCatalog();
+        const preset = deploys.find((d: Data) => d.id === c.deployId || d.id === c.sourceDeployId);
+        if (preset) requirements = { ...preset.requirements, joomla: preset.joomla };
+      }
       return { configuration: c, requirements };
     }
     const supplied = args.source;

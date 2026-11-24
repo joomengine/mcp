@@ -22,10 +22,12 @@ export async function exerciseWorkspaceSurfaces(call) {
   await call('browser_inspect', { ...shell, waitForSelector: 'iframe.jec-ai-frame', timeoutMs: 60000 });
   assert.equal((await call('browser_inspect', { scope: 'ai' })).isolated, true);
   await call('browser_click', { ...shell, selector: 'button[data-i18n="code.ai"]' });
+  await call('browser_inspect', { ...shell, waitForSelector: '#code-button:enabled' });
   await call('browser_click', { ...shell, selector: '#code-button:enabled' });
 
   await call('browser_click', { ...shell, selector: '#database-button' });
   page = await call('browser_inspect', { scope: 'database', waitForSelector: 'body', timeoutMs: 120000 });
   assert.match(page.path, /__adminer\//);
+  await call('browser_inspect', { ...shell, waitForSelector: '#database-button:enabled' });
   await call('browser_click', { ...shell, selector: '#database-button:enabled' });
 }

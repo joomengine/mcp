@@ -1,6 +1,6 @@
 # Connect to an existing Playground
 
-Run the MCP on the machine with the browser or JoomEngine Desktop. Open or resume the intended site in that application. Configure the MCP process with the local debugger address in `JOOMENGINE_BROWSER_ENDPOINT`, then call `workspace_attach`. A cloud agent creating its own site uses `workspace_open` directly.
+Run the MCP on the machine with the browser or JoomEngine Desktop. Open or resume the intended site in that application. Configure the MCP process with the local debugger address in `JOOMENGINE_BROWSER_ENDPOINT`, then call `workspace_list` and pass the intended owner’s `tabId` to `workspace_attach`. A cloud agent creating its own site uses `workspace_open` directly.
 
 ## Firefox
 
@@ -44,7 +44,7 @@ The Linux and macOS builds expose the Qt WebEngine page debugger. The Windows bu
 
 ## Workspace identity and lifecycle
 
-- `workspace_attach` returns the workspace ID, site name, runtime versions and persistence status. When multiple owner windows match, call it again with a returned `tabId`. The MCP excludes Joomla previews, detached editor windows and unrelated tabs.
+- `workspace_list` lists each owner tab’s title, available site name, storage key, deployment and preview status, including owners at the startup screen. The list works before and after attaching. `workspace_attach` selects the returned tab ID and reports the selected workspace’s identity and runtime state. In Firefox, a full page reload creates a new owner document ID. Refresh the list after a reload. Joomla previews, detached editor windows and unrelated tabs stay outside this list.
 - `JOOMENGINE_PLAYGROUND_URL` selects a self-hosted Playground base URL. Include its installation path and trailing slash. HTTPS and local HTTP development hosts are supported.
 - `workspace_close` releases the companion connection. The owner tab, unsaved form drafts, PHP workers and profile remain with the client.
 - To restore an exported complete site, call `site_restore` with its artifact ID. Pass the active `workspace_info.workspaceId` as `replaceWorkspaceId` to authorize replacing that exact site. The MCP verifies the owner again at its replacement prompt and selects Continue. With that argument omitted, the client chooses in the owner window. Separate prompts about unsaved edits remain under client control. A successful result contains the new workspace ID. After a cancellation, inspect `workspace_info` before submitting a different restore.
@@ -63,5 +63,7 @@ The Linux and macOS builds expose the Qt WebEngine page debugger. The Windows bu
 | Adminer | Open DB from the shell and use `scope: "database"`. SQL import accepts an artifact through the native file input. |
 | Editor AI | Open the AI button in Code. Use `browser_screenshot`, `browser_pointer` and `browser_keyboard` with `scope: "ai"`. The provider login and conversation run inside the editor's isolated iframe. |
 | Detached editor or DB | Use the owner layout's redock control to return an auxiliary editor to its dock. Its live files and database remain available through the workspace tools. |
+
+Read ordinary editable form values with `browser_inspect` and `includeValues: true`. Use `browser_options` with a filter or offset for choices beyond the first inspection page. `browser_scroll` scrolls a visible surface using native wheel events. A click, pointer or keyboard action can receive `dialogResponses` for native browser alerts, confirms and prompts. Each response gives the exact dialog `type`, `message` and `accept` choice, plus optional prompt `text`. An unexpected dialog is dismissed and its message is returned so the agent can choose an explicit response. For an HTML dialog, inspect its controls and click the required button.
 
 A screenshot returns a PNG image and its workspace artifact ID. Use `artifact_save` to deliver it or `artifact_release` after reading it. Pointer coordinates are CSS pixels relative to the visible surface. Click a control before sending keyboard input. In the editor AI panel, connecting an account and sending project content follow the provider and permission choices made for that workspace.

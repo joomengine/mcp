@@ -12,7 +12,7 @@ import { WorkspaceOperations } from './operations.js';
 import { getDeploymentCatalog, getDeploymentSchema } from './browser-catalog.js';
 import { lifecycleTools } from './lifecycle.js';
 import { browserTools } from './browser-ui.js';
-import { attachWorkspace } from './attach.js';
+import { attachWorkspace, listWorkspaceTabs } from './attach.js';
 import { createJoomlaProvider, connectComposerProvider } from './joomla.js';
 import { hostArtifactTools, transferArtifact } from './artifacts.js';
 import { runtimeTools } from './runtime-tools.js';
@@ -42,13 +42,13 @@ const bootstrap = [
   tool('skills_search', 'Search across the canonical skill guides, workflows, models and examples. Use each result URI with skills_read.', { query: { type: 'string', minLength: 1, maxLength: 512 }, cursor: textField }, ['query']),
   tool('skills_list', 'List current JCB and Playground skills with their resource URIs. Follow nextCursor for more.', { cursor: textField }),
   tool('skills_read', 'Read a canonical workflow by resource URI. Start with joomengine://skills/SKILL.md and follow its relative links.', { uri: textField }, ['uri']),
-  tool('workspace_open', 'Launch a fresh site in an isolated agent browser. Use jcb-mcp for native Joomla and JCB capabilities. An open workspace must first be closed explicitly.', {
+  tool('workspace_open', 'Open an isolated browser dashboard, start a deployment, or resume a saved profile site. Use jcb-mcp for native Joomla and JCB capabilities. An open workspace must first be closed explicitly.', {
     deployId: textField, configuration: { type: 'object' }, document: { type: 'object' },
     sourceURL: textField, shareURL: textField, savedSiteKey: textField, idle: { type: 'boolean' },
   }),
-  tool('workspace_close', 'Release the current workspace. Closing a cloud browser discards its private profile. Export wanted artifacts first. Closing an attached workspace leaves the client application running.'),
+  tool('workspace_close', 'Release the current workspace. A configured persistent cloud profile keeps saved sites. Export wanted artifacts before closing a disposable profile. Closing an attached workspace leaves the client application running.'),
 ];
-const longRunning = ['workspace_open', 'workspace_attach', 'workspace_start', 'workspace_restart', 'workspace_stop', 'workspace_reset', 'workspace_resume', 'deployment_configure', 'deployment_launch', 'deployment_clone', 'site_console', 'jcb_compile', 'extension_install', 'jcb_refresh_tools', 'site_export', 'site_restore', 'backup_save', 'backup_update', 'backup_import', 'backup_export', 'workspace_recovery_export', 'workspace_repair', 'artifact_save', 'artifact_load'];
+const longRunning = ['workspace_open', 'workspace_attach', 'workspace_start', 'workspace_restart', 'workspace_stop', 'workspace_reset', 'workspace_resume', 'workspace_recover', 'deployment_configure', 'deployment_launch', 'deployment_clone', 'site_console', 'jcb_compile', 'extension_install', 'jcb_refresh_tools', 'site_export', 'site_restore', 'backup_save', 'backup_update', 'backup_import', 'backup_export', 'workspace_recovery_export', 'workspace_repair', 'artifact_save', 'artifact_load'];
 const external = (prefix: string, label: string) => [
   tool(prefix + '_tools', 'List the ' + label + ' tool schemas, passing nextCursor as cursor for subsequent pages.', { cursor: textField }),
   tool(prefix + '_call', 'Invoke a discovered ' + label + ' tool using its exact input schema.', { name: textField, arguments: { type: 'object' } }, ['name']),
@@ -58,6 +58,7 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   const tools: Tool[] = [...bootstrap, ...lifecycleTools, ...deploymentTools, ...runtimeTools, ...providerTools(!!options.composerSite), ...browserTools, ...jcbTools, ...external('joomla', 'TypeScript Joomla MCP')];
   if (options.artifactDirectory) tools.push(...hostArtifactTools);
   if (options.browserEndpoint) tools.push(tool('workspace_attach', 'Connect to the selected open Playground browser or desktop workspace using the endpoint configured by its operator. Provide tabId when more than one workspace matches.', { tabId: textField }));
+  if (options.browserEndpoint) tools.push(tool('workspace_list', 'List Playground owner tabs on the configured local browser or desktop, including idle tabs. Select a returned tabId for workspace_attach.'));
   if (options.composerSite) tools.push(...external('composer', 'Composer stdio Joomla MCP'));
   const operations = new WorkspaceOperations();
   const available = longRunning.filter(name => tools.some(item => item.name === name));
@@ -97,6 +98,7 @@ export function createPlaygroundServer(options: HostOptions = {}) {
   }
   async function invoke(name: string, args: Record<string, unknown>) {
     if (disposed) throw new Error('The MCP session is closed.');
+    if (name === 'workspace_list') return workspace?.listAttachedTabs?.() ?? listWorkspaceTabs({endpoint: options.browserEndpoint!, playgroundUrl: options.baseURL});
     if (name === 'workspace_open' || name === 'workspace_attach') {
       if (workspace) throw new Error('A workspace is already open. Export wanted work and call workspace_close before switching.');
       if (name === 'workspace_attach') {
@@ -116,7 +118,7 @@ export function createPlaygroundServer(options: HostOptions = {}) {
       return name === 'composer_tools' ? composer.listTools(args.cursor as string | undefined) : composer.callTool(args.name as string, (args.arguments ?? {}) as Record<string, unknown>);
     }
     if (!workspace) throw new Error('Open a cloud workspace or attach to an existing workspace first.');
-    if (['site_restore','workspace_stop','workspace_start','workspace_reset','workspace_resume','workspace_restart','deployment_launch','deployment_clone'].includes(name)) {
+    if (['site_restore','workspace_stop','workspace_start','workspace_reset','workspace_resume','workspace_recover','workspace_restart','deployment_launch','deployment_clone'].includes(name)) {
       // Replacing the site ends all site-specific write plans, even when a restore later fails.
       await closeNative();
       await joomla?.close();

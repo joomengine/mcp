@@ -21,6 +21,24 @@ const surface = {
       'Descend through same-origin site or editor frames using frame selectors or references from browser_inspect.'
   }
 };
+const dialogResponses = {
+  type: 'array',
+  minItems: 1,
+  maxItems: 8,
+  description:
+    'Optional expected native JavaScript dialogs for this action, in order. Supply exact dialog text and type. An unexpected prompt is dismissed and reported.',
+  items: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: ['alert', 'confirm', 'prompt'] },
+      message: text,
+      accept: { type: 'boolean' },
+      text
+    },
+    required: ['type', 'message', 'accept'],
+    additionalProperties: false
+  }
+};
 const spec = (name: string, description: string, properties: Record<string, object>, required: string[] = []) => ({
   name,
   description,
@@ -41,6 +59,10 @@ export const browserTools = [
       ...surface,
       offset: paging,
       textOffset: paging,
+      includeValues: {
+        type: 'boolean',
+        description: 'Read ordinary editable field values (up to 2,000 characters each).'
+      },
       waitForSelector: text,
       waitForText: text,
       timeoutMs: { type: 'integer', minimum: 1, maximum: 120000 }
@@ -49,7 +71,7 @@ export const browserTools = [
   spec(
     'browser_click',
     'Activate a visible control in the selected surface, including toolbar, menu, drawer or form actions.',
-    { ...surface, selector },
+    { ...surface, selector, dialogResponses },
     ['selector']
   ),
   spec(
@@ -71,6 +93,24 @@ export const browserTools = [
     ['selector', 'checked']
   ),
   spec(
+    'browser_options',
+    'Search or page through a selection field’s complete options.',
+    { ...surface, selector, filter: text, offset: paging, limit: { type: 'integer', minimum: 1, maximum: 250 } },
+    ['selector']
+  ),
+  spec(
+    'browser_scroll',
+    'Scroll by CSS pixels at a point on the visible site, editor, database or AI panel. Coordinates use browser_screenshot.',
+    {
+      ...surface,
+      x: paging,
+      y: paging,
+      deltaX: { type: 'integer', minimum: -20000, maximum: 20000 },
+      deltaY: { type: 'integer', minimum: -20000, maximum: 20000 }
+    },
+    ['x', 'y', 'deltaY']
+  ),
+  spec(
     'browser_upload',
     'Fill a file input with retained workspace artifacts, e.g. an installer, media or Adminer SQL import. Submit the form separately.',
     { ...surface, selector, artifactIds: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string' } } },
@@ -84,7 +124,7 @@ export const browserTools = [
   spec(
     'browser_pointer',
     'Click at CSS-pixel coordinates relative to the visible surface from browser_screenshot. Supports the visual editor and the isolated AI panel.',
-    { ...surface, x: paging, y: paging },
+    { ...surface, x: paging, y: paging, dialogResponses },
     ['x', 'y']
   ),
   spec(
@@ -92,6 +132,7 @@ export const browserTools = [
     'Type text or press a key in the focused control of the selected surface. For isolated AI, click within the panel first.',
     {
       ...surface,
+      dialogResponses,
       text: { type: 'string', minLength: 1, maxLength: 8192 },
       key: {
         type: 'string',
@@ -275,7 +316,11 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
       width = Math.floor(right) - x,
       height = Math.floor(bottom) - y;
     if (width < 1 || height < 1) throw new Error('The selected surface is outside the visible viewport.');
-    if (args.focus && frames.some((frame) => frame.ownerDocument.activeElement !== frame))
+    if (
+      args.focus &&
+      (frames.some((frame) => frame.ownerDocument.activeElement !== frame) ||
+        doc?.activeElement?.localName === 'iframe')
+    )
       throw new Error('Focus a control inside the selected surface first.');
     if (args.x !== undefined) {
       let hitX = x + args.x,
@@ -289,6 +334,8 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
         hitX -= rect.left + frame.clientLeft;
         hitY -= rect.top + frame.clientTop;
       }
+      if (doc?.elementFromPoint(hitX, hitY)?.localName === 'iframe')
+        throw new Error('Select the child frame or named panel before sending native input.');
     }
     return { x, y, width, height, scrollX: window.scrollX, scrollY: window.scrollY };
   }
@@ -330,6 +377,12 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
         node.getAttribute('name') ||
         '';
       const type = node.getAttribute('type') || undefined;
+      const showValue =
+        args.includeValues &&
+        node.matches('textarea,input:not([type=password]):not([type=file])') &&
+        !/password|secret|token|credential|api.?key|auth/i.test(
+          [node.id, control.name, control.autocomplete, type].join(' ')
+        );
       return {
         ref,
         tag: node.localName,
@@ -337,11 +390,13 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
         id: node.id || undefined,
         name: node.getAttribute('name') || undefined,
         label: name.trim().slice(0, 180),
+        ...(showValue ? { value: control.value.slice(0, 2000), valueLength: control.value.length } : {}),
         disabled: node.matches(':disabled,[aria-disabled=true]'),
         ...(['checkbox', 'radio'].includes(type ?? '') ? { checked: control.checked } : {}),
         ...(node.localName === 'select'
           ? {
-              options: [...(node as HTMLSelectElement).options].map((o) => ({
+              optionCount: (node as HTMLSelectElement).options.length,
+              options: [...(node as HTMLSelectElement).options].slice(0, 80).map((o) => ({
                 value: o.value,
                 label: o.text,
                 selected: o.selected
@@ -384,6 +439,9 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
         )
           throw new Error('This control targets a different site or window.');
       }
+      if (node.matches('input[type=file]'))
+        throw new Error('Use browser_upload with workspace artifact IDs for file inputs.');
+      node.focus();
       node.click();
       break;
     }
@@ -400,6 +458,23 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
       else throw new Error('Choose a writable text field or editable area.');
       changed();
       break;
+    }
+    case 'browser_options': {
+      if (node.localName !== 'select') throw new Error('Choose a selection field.');
+      const select = node as HTMLSelectElement,
+        query = String(args.filter ?? '').toLowerCase();
+      const options = [...select.options].filter(
+        (o) => !query || o.value.toLowerCase().includes(query) || o.text.toLowerCase().includes(query)
+      );
+      const offset = Number(args.offset ?? 0),
+        end = Math.min(options.length, offset + Number(args.limit ?? 80));
+      return {
+        total: options.length,
+        nextOffset: end < options.length ? end : null,
+        options: options
+          .slice(offset, end)
+          .map((o) => ({ label: o.text, value: o.value, selected: o.selected, disabled: o.matches(':disabled') }))
+      };
     }
     case 'browser_select': {
       const select = node as HTMLSelectElement;

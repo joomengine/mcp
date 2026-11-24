@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { attachWorkspace } from '../dist/attach.js';
+import { attachWorkspace, listWorkspaceTabs } from '../dist/attach.js';
 import { exerciseWorkspaceSurfaces } from './attach-ui-scenario.mjs';
 
 const mode = process.env.ATTACH_BROWSER || 'chromium';
@@ -26,7 +26,7 @@ async function fixture(t) {
   const modules = new Map(await Promise.all(['runtime-views.mjs', 'mcp.mjs', 'i18n.mjs', 'locales/en.mjs'].map(async module => [
     '/src/' + module, await readFile(path.join(process.env.PLAYGROUND_SOURCE, 'src', module)),
   ])));
-  const owner = `<iframe id="site-frame" src="/__site/fixture/"></iframe>
+  const owner = `<title>Primary owner</title><button style="position:fixed;top:0;left:0;z-index:5" id="open-idle" onclick="window.open('/?second=1','idle-owner')">Open idle owner</button><iframe id="site-frame" src="/__site/fixture/"></iframe>
     <iframe class="jec-ai-frame" sandbox="allow-scripts" srcdoc="<button style='position:fixed;inset:0' onclick='parent.postMessage(1,&quot;*&quot;)'>AI panel action</button>"></iframe>
     <output id="ai-proof"></output><button id="upload-site-button">Upload</button><input type="file" id="upload-site-file"><script type="module">
     import { createRuntimeViewHost } from './src/runtime-views.mjs';
@@ -80,9 +80,11 @@ async function fixture(t) {
   const server = createServer((req, res) => {
     const module = modules.get(req.url);
     res.setHeader('Content-Type', module ? 'text/javascript' : 'text/html');
+    if (req.url === '/?second=1') return res.end('<title>Secondary owner</title><input id=site-name value="Idle client site">');
     if (req.url === '/__site/fixture/') return res.end(`<label>Title<input name="title"></label><input type="checkbox" id="selected">
       <select multiple id="multiple"><option value="first">First</option><option value="second">Second</option></select>
       <input type="file" id="file" onchange="document.querySelector('p').textContent=this.files[0].name">
+      <button id="prompt" onclick="if(confirm('Update this title?')) document.querySelector('p').textContent=prompt('Title','')">Change</button>
       <p></p><iframe title="Editor" id="editor" srcdoc="<body contenteditable=true>Hello</body>"></iframe>`);
     res.end(module ?? owner);
   });
@@ -105,6 +107,12 @@ async function exerciseAttachedComponent(endpoint) {
     assert(!attached.isError, 'Expected to attach to the same client-owned workspace.');
     const info = attached.structuredContent ?? JSON.parse(attached.content[0].text);
     await exerciseJcb(client, { replaceWorkspaceId: info.workspaceId });
+    const {exerciseDeploymentLaunch} = await import('./deployment-scenario.mjs');
+    await exerciseDeploymentLaunch(async (name,args) => {
+      const response=await client.callTool({name,arguments:args},undefined,{timeout:16*60_000});
+      assert(!response.isError, JSON.stringify(response.content));
+      return response.structuredContent ?? JSON.parse(response.content.find(item=>item.type==='text').text);
+    });
   } finally { await client.close(); }
 }
 
@@ -171,6 +179,11 @@ test('attach to the selected running owner, preserve site and process across dis
   assert.equal((await active.call('file_read', {path:target})).content, content);
   if (!hosted) {
     const scope = 'site';
+    const first = await active.listAttachedTabs();
+    assert.equal(first.tabs.length,1);
+    assert.equal(first.tabs[0].previewLoaded,true);
+
+
     const query = await active.call('browser_inspect',{scope});
     assert(query.controls.some(c => c.label === 'Title' && c.name === 'title'));
     await active.call('browser_check',{scope,selector:'#selected',checked:true});
@@ -180,6 +193,14 @@ test('attach to the selected running owner, preserve site and process across dis
     assert.deepEqual(controls.find(c=>c.id==='multiple').options.map(o=>o.selected),[true,true]);
     await active.call('browser_fill',{scope,framePath:['#editor'],selector:'body',value:'Edited rich text'});
     assert.match((await active.call('browser_inspect',{scope,framePath:['#editor']})).text,/Edited rich text/);
+    const chosen=await active.call('browser_options',{selector:'#multiple',filter:'Second',limit:1});
+    assert.equal(chosen.options[0].value, 'second');
+    await assert.rejects(active.call('browser_click',{selector:'#prompt'}),/Update this title/);
+    const answer=await active.call('browser_click',{selector:'#prompt',dialogResponses:[
+      {type:'confirm',message:'Update this title?',accept:true},{type:'prompt',message:'Title',accept:true,text:'Confirmed title'}
+    ]});
+    assert.equal(answer.dialogs.length,2);
+    assert.match((await active.call('browser_inspect',{scope})).text,/Confirmed title/);
     const saved = await active.call('site_export', {});
     await active.call('browser_upload',{scope,selector:'#file',artifactIds:[saved.id]});
     assert.match((await active.call('browser_inspect',{scope})).text,/fixture.zip/);
@@ -188,6 +209,7 @@ test('attach to the selected running owner, preserve site and process across dis
     assert.equal(shot.structuredContent.mimeType,'image/png');
     await active.call('browser_pointer',{scope:'ai',x:20,y:20});
     assert.match((await active.call('browser_inspect',{scope:'playground',waitForText:'Visual AI action received'})).text,/Visual AI action received/);
+    await active.call('browser_scroll',{scope:'ai',x:8,y:8,deltaY:20});
     await active.call('browser_keyboard',{scope:'ai',key:'Tab'});
     await assert.rejects(active.call('browser_keyboard',{scope:'site',text:'Wrong surface'}),/Focus a control/);
     await active.call('artifact_release',{id:shot.structuredContent.id});
@@ -195,6 +217,22 @@ test('attach to the selected running owner, preserve site and process across dis
     assert.equal((await active.call('workspace_info', {})).workspaceId, info.workspaceId);
     const restored = await active.call('site_restore', {id:saved.id, replaceWorkspaceId:info.workspaceId});
     assert.deepEqual(restored, {workspaceId:'restored-owner', restored:true});
+    await active.call('browser_pointer',{scope:'playground',x:40,y:15});
+    let choices;
+    for (let i=0;i<50;i++) {
+      choices=await active.listAttachedTabs();
+      if (choices.tabs.some(tab=>tab.siteName === 'Idle client site')) break;
+      await delay(100);
+    }
+    assert.deepEqual(choices.tabs.map(tab=>tab.title).sort(),['Primary owner','Secondary owner']);
+    assert.equal(choices.tabs.find(tab=>tab.title === 'Secondary owner').previewLoaded,false);
+    await active.close();
+    active=undefined;
+    assert.deepEqual((await listWorkspaceTabs({endpoint,playgroundUrl:base})).tabs.map(tab=>tab.tabId).sort(),choices.tabs.map(tab=>tab.tabId).sort());
+    await assert.rejects(attachWorkspace({endpoint,playgroundUrl:base}),/workspace_list/);
+    active=await attachWorkspace({endpoint,playgroundUrl:base,tabId:first.tabs[0].tabId});
+    assert.equal((await active.call('workspace_info',{})).workspaceId,'restored-owner');
+
   }
   if (hosted) {
     const { exerciseDeployment } = await import('./deployment-scenario.mjs');

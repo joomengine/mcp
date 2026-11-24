@@ -25,6 +25,10 @@ try {
   await client.connect(transport);
   const tools = (await client.listTools()).tools.map(t => t.name);
   for (const name of ['workspace_open', 'browser_navigate', 'joomla_call', 'native_call']) assert(tools.includes(name));
+  const catalogue = await call('deployment_catalog');
+  assert(catalogue.joomla.some(r => r.version === catalogue.defaults.joomlaVersion));
+  assert(catalogue.recipes.some(r => r.id === 'blank'));
+  assert(catalogue.recipes.some(r => r.id === 'jcb-mcp'));
   for (const deployId of deployments) {
     assert(['blank', 'jcb-mcp'].includes(deployId));
     console.log('Provisioning ' + deployId);

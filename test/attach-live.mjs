@@ -69,8 +69,6 @@ async function exerciseAttachedComponent(endpoint) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
   const { exerciseJcb } = await import('./jcb-scenario.mjs');
-  const { armRestoreConfirmation } = await import('./confirm-restore.mjs');
-  const { DebugConnection } = await import('../dist/attach-wire.js');
   const client = new Client({name:'attached-jcb-acceptance',version:'1'});
   await client.connect(new StdioClientTransport({
     command: process.execPath, args: [fileURLToPath(new URL('../dist/cli.js', import.meta.url))],
@@ -79,22 +77,8 @@ async function exerciseAttachedComponent(endpoint) {
   try {
     const attached = await client.callTool({name:'workspace_attach',arguments:{}});
     assert(!attached.isError, 'Expected to attach to the same client-owned workspace.');
-    await exerciseJcb(client, {beforeRestore: async () => {
-      const tabs = await (await fetch(endpoint + '/json/list')).json();
-      const owner = tabs.find(tab => {
-        const url = new URL(tab.url);
-        return tab.type === 'page' && url.origin === 'https://playground.joomengine.org'
-          && url.pathname === '/' && !url.searchParams.has('view');
-      });
-      assert.ok(owner, 'The same isolated owner must receive the site-replacement prompt.');
-      const observer = await DebugConnection.open(new URL(owner.webSocketDebuggerUrl));
-      try {
-        const result = await observer.request('Runtime.evaluate', {
-          expression: '(' + armRestoreConfirmation.toString() + ')()', returnByValue:true
-        });
-        assert.ok(!result.exceptionDetails, result.exceptionDetails?.text);
-      } finally { observer.close(); }
-    }});
+    const info = attached.structuredContent ?? JSON.parse(attached.content[0].text);
+    await exerciseJcb(client, { replaceWorkspaceId: info.workspaceId });
   } finally { await client.close(); }
 }
 

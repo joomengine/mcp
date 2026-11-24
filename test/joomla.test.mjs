@@ -6,6 +6,7 @@ import { joomlaApi } from '../dist/joomla-browser.js';
 test('published TypeScript server discovers and executes a category read through the workspace', async () => {
   const calls = [];
   const provider = await createJoomlaProvider({ call: async (operation, payload) => {
+    if (operation === 'workspace_info') return { workspaceId: 'cloud-test', siteUrl: 'https://example.test/__site/fixture/' };
     calls.push({ operation, payload });
     return { status: 200, headers: {}, data: { data: [{ type: 'categories', id: '42', attributes: { title: 'Playground test' } }] } };
   } });
@@ -26,7 +27,9 @@ test('published TypeScript server discovers and executes a category read through
 test('browser transport retains native token, bounds routes and preserves optimistic writes', async () => {
   const token = 'private-credential-for-active-workspace';
   let requests = 0;
+  const identity = { workspaceId: 'fixture', siteUrl: 'https://fixture.test/__site/instance/' };
   const runtime = {
+    workspace: { id: identity.workspaceId }, baseUrl: identity.siteUrl,
     getMcpConnection: async () => ({ installed: true, token }),
     request: async (path, options) => {
       requests++;
@@ -39,14 +42,15 @@ test('browser transport retains native token, bounds routes and preserves optimi
     }
   };
   const result = await joomlaApi(runtime, {
-    path: 'v1/content/articles/3', method: 'PATCH', body: { title: 'Change' },
+    ...identity, path: 'v1/content/articles/3', method: 'PATCH', body: { title: 'Change' },
     query: { filter: ['one', 'two'] }, etag: 'revision', idempotencyKey: 'intent1'
   });
   assert.equal(result.data.id, 3);
   assert.equal(result.headers.etag, 'new');
   assert(!JSON.stringify(result).includes(token));
   assert(!Object.hasOwn(result.headers, 'set-cookie'));
-  await assert.rejects(joomlaApi(runtime, { path: 'v1/%2E%2e/admin', method: 'GET' }));
+  await assert.rejects(joomlaApi(runtime, { ...identity, path: 'v1/%2E%2e/admin', method: 'GET' }));
+  await assert.rejects(joomlaApi(runtime, { ...identity, workspaceId: 'another', path: 'v1/content/categories', method: 'GET' }), /site changed/);
   assert.equal(requests, 1);
 });
 

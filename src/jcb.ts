@@ -6,6 +6,9 @@ const tool = (name: string, description: string, properties: Record<string, Sche
 const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_]*$' };
 export const jcbTools = [
   tool('jcb_list_components', 'List component IDs, names, and supported target versions from the authenticated JCB compiler.'),
+  tool('jcb_form', 'Describe editable fields on this installation’s native JCB administrator form before using jcb_save_records. Returns its JSON Schema with types, required fields, defaults, choices and relationship metadata where available. Optionally select individual fields.', {
+    view: identifier, fields: { type: 'array', minItems: 1, uniqueItems: true, items: identifier }
+  }, ['view']),
   tool('jcb_compile', 'Compile a saved JCB component through its installed administrator form. Returns verified ZIP paths and hashes. Use file_export on those paths to retain installers.', {
     componentId: { type: 'integer', minimum: 1 },
     joomlaMajor: { type: 'integer', minimum: 3, description: 'Defaults to the active Joomla major.' }
@@ -57,12 +60,35 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
     if (plugin?.status !== 'applied') throw new Error(plugin?.notice || 'Joomla could not enable the selected plugin.');
     return { enabled: true, folder: args.folder, element: args.element, id: plugin.id };
   }
+  if (operation === 'jcb_form') {
+    if (typeof args.view !== 'string' || !/^[a-z][a-z0-9_]*$/.test(args.view)) throw new Error('Select a JCB administrator view.');
+    const { discoverJoomlaConfiguration } = await import(moduleUrl);
+    const result = await discoverJoomlaConfiguration(runtime, {
+      kind: 'record', component: 'com_componentbuilder', view: args.view, admin: runtime.installation?.administrator
+    });
+    const view = result.configurationTargets[0].view;
+    const schema = result.schema;
+    if (!args.fields) return { view, schema };
+    if (!Array.isArray(args.fields) || !args.fields.length) throw new Error('Select at least one field.');
+    const properties: Record<string, unknown> = {};
+    for (const name of args.fields) {
+      if (typeof name !== 'string' || !Object.hasOwn(schema.properties, name)) throw new Error('Unknown field in the installed ' + view + ' form: ' + name);
+      properties[name] = schema.properties[name];
+    }
+    return { view, schema: { ...schema, properties, required: schema.required.filter((name: string) => Object.hasOwn(properties, name)) } };
+  }
   if (operation === 'jcb_save_records') {
     if (!Array.isArray(args.records) || !args.records.length || args.records.length > 50) throw new Error('Supply between one and fifty JCB records.');
     const { normalizeDeploymentOverlays } = await import(new URL('src/deployment-overlays.mjs', base).href);
     const { applyJoomlaOverlays } = await import(moduleUrl);
     const records = normalizeDeploymentOverlays(args.records.map(r => ({ ...r, kind: 'record', component: 'com_componentbuilder' })));
-    return applyJoomlaOverlays(runtime, records, { admin: runtime.installation?.administrator });
+    const saved = await applyJoomlaOverlays(runtime, records, { admin: runtime.installation?.administrator });
+    const skipped = saved.results.filter((item: { status: string }) => item.status !== 'applied');
+    if (!skipped.length) return saved;
+    const notices = skipped.map((item: { key: string; notice?: string }) => item.notice ?? ('Skipped ' + item.key + '.'));
+    return { isError: true, structuredContent: saved, content: [{ type: 'text',
+      text: `Applied ${saved.results.length - skipped.length} of ${saved.results.length} JCB records. Read back saved records, correct the errors, and retry only the skipped keys.\n` + notices.join('\n')
+    }] };
   }
   if (operation === 'jcb_refresh_tools') {
     if (typeof args.component !== 'string' || !/^com_[a-z][a-z0-9_]{0,95}$/.test(args.component)) throw new Error('Select an installed Joomla component.');

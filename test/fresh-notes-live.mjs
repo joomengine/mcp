@@ -18,11 +18,12 @@ async function call(name, args = {}) {
   return reply.structuredContent ?? JSON.parse(output);
 }
 async function defaults(view) {
-  const resource = await client.readResource({ uri: 'joomengine://skills/packages/reference/' + view + '.json' });
-  const { fields } = JSON.parse(resource.contents[0].text);
-  return Object.fromEntries(Object.entries(fields).flatMap(([key, field]) => {
-    const attrs = field.form?.[0]?.attributes;
-    return attrs?.required === 'true' && attrs.default !== undefined && attrs.default !== '' ? [[key, attrs.default]] : [];
+  const { schema } = await call('jcb_form', { view });
+  // A JCB model can remove conditional fields from a specific installation's
+  // native form. Only use defaults actually declared by that form.
+  return Object.fromEntries((schema.required ?? []).flatMap(key => {
+    const { default: value } = schema.properties[key];
+    return value === undefined || value === '' || value === null ? [] : [[key, value]];
   }));
 }
 const admin = '/administrator/index.php?option=com_mcpnotebook';
@@ -30,6 +31,8 @@ const ids = { field: randomUUID(), view: randomUUID(), component: randomUUID() }
 const xml = '<field type="text" name="title" label="Title" description="Note title" maxlength="120" required="true" filter="STRING" />';
 try {
   await client.connect(transport);
+  const guide = await client.readResource({ uri: 'joomengine://skills/testing/scenarios/notes-admin-verification.md' });
+  assert.match(guide.contents[0].text, /Notes/);
   await call('workspace_open', { deployId: 'jcb-mcp' });
   const [fieldDefaults, viewDefaults, componentDefaults] = await Promise.all(['field', 'admin_view', 'joomla_component'].map(defaults));
   const { tablePrefix } = await call('database_query', { sql: 'SELECT 1' });
@@ -42,11 +45,11 @@ try {
     { key: 'notes-title', view: 'field', guid: ids.field, fields: { ...fieldDefaults, published: 1, access: 1, name: 'MCP Notebook Title',
       fieldtype: rows[0].guid, xml, datatype: 'VARCHAR', datalenght: 'Other', datalenght_other: '120', datadefault: '', indexes: '0', store: '0' } },
     { key: 'notes-view', view: 'admin_view', guid: ids.view, fields: { ...viewDefaults, published: 1, access: 1, system_name: 'MCP Notebook Notes',
-      name_single: 'Note', name_list: 'Notes', short_description: 'Manage notebook notes', type: '1', source: '2', add_sql: '0' } },
+      name_single: 'Note', name_list: 'Notes', short_description: 'Manage notebook notes', type: '1' } },
     { key: 'notebook', view: 'joomla_component', guid: ids.component, fields: { ...componentDefaults, published: 1, access: 1,
       name: 'MCP Notebook', system_name: 'MCP Notebook', name_code: 'mcpnotebook', short_description: 'Administrator notebook',
       author: 'JoomEngine', companyname: 'JoomEngine', email: 'qa@example.test', website: 'https://joomengine.org/',
-      component_version: '1.0.0', namespace_prefix: 'Joomengine', dashboard_type: '1', buildcomp: '0', add_sales_server: '0', bom: 'default.txt' } },
+      component_version: '1.0.0', namespace_prefix: 'Joomengine' } },
     { key: 'notes-fields', view: 'admin_fields', match: { admin_view: ids.view }, dependsOn: ['notes-title', 'notes-view'],
       fields: { admin_view: ids.view, published: 1, addfields: { addfields0: { field: ids.field, list: '1', order_list: '1',
         title: '1', sort: '1', search: '1', link: '1', tab: '1', alignment: '1', order_edit: '1' } } } },

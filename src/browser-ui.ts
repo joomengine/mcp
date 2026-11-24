@@ -62,8 +62,8 @@ export async function browserUiDispatch(runtime: { baseUrl: string; agentFrame?:
   const doc = checkedDoc();
   const view = doc.defaultView!;
   const stateKey = Symbol.for('joomengine.mcp.ui.controls');
-  const stateDoc = doc as Document & { [stateKey]?: { nodes: Map<string, HTMLElement>; ids: WeakMap<HTMLElement, string>; next: number } };
-  const controls = stateDoc[stateKey] ??= { nodes: new Map(), ids: new WeakMap(), next: 1 };
+  const stateDoc = doc as Document & { [stateKey]?: { nodes: Map<string, HTMLElement>; ids: WeakMap<HTMLElement, string>; documentId: string; next: number } };
+  const controls = stateDoc[stateKey] ??= { nodes: new Map(), ids: new WeakMap(), documentId: crypto.randomUUID().slice(0, 8), next: 1 };
   const visible = (node: HTMLElement) => node.getClientRects().length > 0 && view.getComputedStyle(node).visibility !== 'hidden';
   if (operation === 'browser_inspect') {
     const offset = Number(args.offset ?? 0), textOffset = Number(args.textOffset ?? 0);
@@ -72,7 +72,7 @@ export async function browserUiDispatch(runtime: { baseUrl: string; agentFrame?:
     const maxText = 6000;
     const entries = nodes.slice(offset, offset + 80).map(node => {
       let ref = controls.ids.get(node);
-      if (!ref) { ref = '@' + controls.next++; controls.ids.set(node, ref); controls.nodes.set(ref, node); }
+      if (!ref) { ref = '@' + controls.documentId + '-' + controls.next++; controls.ids.set(node, ref); controls.nodes.set(ref, node); }
       const control = node as HTMLInputElement;
       const name = node.getAttribute('aria-label') || (control.labels ? [...control.labels].map(l => l.innerText).join(' ') : '')
         || node.innerText || node.getAttribute('title') || node.getAttribute('placeholder') || node.getAttribute('name') || '';
@@ -85,7 +85,7 @@ export async function browserUiDispatch(runtime: { baseUrl: string; agentFrame?:
       controls: entries, nextOffset: nodes.length > offset + entries.length ? offset + entries.length : null };
   }
   const requested = String(args.selector);
-  const node = /^@\d+$/.test(requested) ? controls.nodes.get(requested) : doc.querySelector<HTMLElement>(requested);
+  const node = requested.startsWith('@') ? controls.nodes.get(requested) : doc.querySelector<HTMLElement>(requested);
   if (!node?.isConnected || !visible(node) || node.matches(':disabled,[aria-disabled=true]')) throw new Error('This control is absent, hidden or disabled. Inspect the current page.');
   if (operation === 'browser_click') {
     const anchor = node.closest('a[href]') as HTMLAnchorElement | null;

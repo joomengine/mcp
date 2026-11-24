@@ -1,5 +1,7 @@
 import { chromium, type JSHandle, type Page } from 'playwright';
 import { browserHandlerSource } from './browser-router.js';
+import { playgroundBase } from './browser-catalog.js';
+export { getDeploymentCatalog } from './browser-catalog.js';
 
 export interface Workspace {
   call(operation: string, args: Record<string, unknown>): Promise<unknown>;
@@ -50,12 +52,7 @@ function deadline<T>(work: Promise<T>, milliseconds: number, message: string): P
 
 /** Boot through the deployed JavaScript API in a fresh, isolated browser profile. */
 export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Workspace> {
-  const base = new URL(options.baseURL ?? 'https://playground.joomengine.org/');
-  if (base.username || base.password || base.search || base.hash || (base.protocol !== 'https:'
-      && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)))) {
-    throw new Error('Configure a Playground HTTPS root URL or a local test server.');
-  }
-  if (!base.pathname.endsWith('/')) base.pathname += '/';
+  const base = playgroundBase(options.baseURL);
   const browser = await chromium.launch({ executablePath: options.executablePath, headless: options.headless ?? true });
   try {
     const context = await browser.newContext();
@@ -75,11 +72,47 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
       const manifest = new URL('assets/manifest.json', base).href;
       const response = await fetch(manifest);
       if (!response.ok) throw new Error('The Playground manifest returned HTTP ' + response.status + '.');
-      const catalog = parseCatalog(await response.json(), { baseURL: manifest });
+      const pinned = parseCatalog(await response.json(), { baseURL: manifest });
+      const deployCatalog = await loadDeployCatalog();
+      const { loadVersionCatalog } = await load('src/version-catalog.mjs');
+      const releases = await loadVersionCatalog().catch(() => null);
+      const input: Record<string, any> = { ...configuration };
+      let catalog = pinned;
+      if (releases) {
+        const [{ dynamicJoomlaChoices }, { selectCatalogPackage }, { resolveJoomlaVersion }] = await Promise.all([
+          load('src/dynamic-selection.mjs'), load('src/dynamic-packages.mjs'), load('src/config.mjs'),
+        ]);
+        const selected = new Map();
+        const exact = pinned.joomla.find((r: any) => r.version === input.joomlaVersion);
+        if (exact) selected.set(exact.version, exact);
+        const joomla = dynamicJoomlaChoices(pinned, releases.joomla, selected).filter((r: any) => r.php.length);
+        const major = pinned.defaults.joomlaVersion.split('.')[0];
+        const current = joomla.find((r: any) => r.channel === 'stable' && r.version.split('.')[0] === major);
+        catalog = { ...pinned, joomla, defaults: { ...pinned.defaults, joomlaVersion: current?.version ?? pinned.defaults.joomlaVersion } };
+        if (!input.joomlaPackage) {
+          const requested = input.joomlaVersion ?? catalog.defaults.joomlaVersion;
+          // Explicit historical pins are resolved by Playground's normal saved-site rules.
+          try { input.joomlaVersion = resolveJoomlaVersion(requested, catalog); } catch { input.joomlaVersion = requested; }
+          const entry = joomla.find((r: any) => r.version === input.joomlaVersion);
+          if (entry && !pinned.joomla.some((r: any) => r.version === entry.version)) {
+            input.joomlaPackage = selectCatalogPackage(entry, { php: entry.php });
+          }
+        }
+      }
       const admin = { name: 'Playground Administrator', username: 'admin', email: 'admin@example.test', password: 'Jp!' + crypto.randomUUID() };
+      if (input.jcbVersion && input.jcbVersion !== 'none' && !input.jcbPackage && releases) {
+        const reviewed = await resolveDeployConfiguration({ deployId: 'jcb', admin }, { catalog: pinned, deployCatalog, baseURL: base });
+        const { pinnedJcbPackages } = await load('src/jcb-selection.mjs');
+        const pins = [...pinnedJcbPackages(reviewed.deploy).values()];
+        const published = releases.jcb.find((r: any) => r.version === input.jcbVersion);
+        if (published && !pins.some(r => r.version === input.jcbVersion)) {
+          const { selectCatalogPackage } = await load('src/dynamic-packages.mjs');
+          input.jcbPackage = selectCatalogPackage(published);
+        }
+      }
       const resolved = await resolveDeployConfiguration({
-        ...configuration, deployId, admin, persistence: false, autoLogin: true, storageKey: 'agent-' + crypto.randomUUID(),
-      }, { catalog, deployCatalog: await loadDeployCatalog(), baseURL: base });
+        ...input, deployId, admin, persistence: false, autoLogin: true, storageKey: 'agent-' + crypto.randomUUID(),
+      }, { catalog, deployCatalog, baseURL: base });
       let current = await createPlayground(resolved.configuration);
       const frame = document.createElement('iframe');
       frame.title = 'Agent Joomla workspace';

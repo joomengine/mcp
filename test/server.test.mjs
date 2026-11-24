@@ -23,6 +23,8 @@ test('stdio client discovers the workflow and receives useful errors before choo
     assert.match(bad.content[0].text, /additional properties/);
     const guide = await client.readResource({ uri: 'joomengine://skills/SKILL.md' });
     assert.match(guide.contents[0].text, /JCB/);
+    const viaTools = await client.callTool({ name: 'skills_read', arguments: { uri: 'joomengine://skills/SKILL.md' } });
+    assert.equal(viaTools.content[0].text, guide.contents[0].text);
     const { prompts } = await client.listPrompts();
     const prompt = await client.getPrompt({ name: prompts[0].name });
     assert(prompt.messages.length);
@@ -41,4 +43,20 @@ test('HTTP requires the operator token and exposes the same resources for an ini
     assert((await client.listResources()).resources.length);
     await transport.terminateSession();
   } finally { await client.close(); await http.close(); }
+});
+
+test('long operations return immediately, retain their result, and can be observed without replaying', async () => {
+  const { WorkspaceOperations } = await import('../dist/operations.js');
+  const jobs = new WorkspaceOperations();
+  let complete;
+  const job = jobs.start('test', () => new Promise(resolve => { complete = resolve; }));
+  assert.equal(jobs.status(job.id).state, 'running');
+  assert.throws(() => jobs.start('new-test', async () => null), /already running/);
+  complete({ saved: true });
+  await Promise.resolve();
+  assert.deepEqual(jobs.status(job.id).result, { saved: true });
+  const failed = jobs.start('bad', async () => { throw new Error('expected'); });
+  await Promise.resolve();
+  assert.equal(jobs.status(failed.id).error, 'expected');
+  assert.equal(jobs.status().operations.length, 2);
 });

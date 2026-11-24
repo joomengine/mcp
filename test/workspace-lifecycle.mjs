@@ -39,13 +39,14 @@ try {
   assert.equal((await call('workspace_start')).phase, 'running');
   const live = await call('workspace_info');
   await call('workspace_restart', {workspaceId: live.workspaceId});
-  await call('workspace_close');
+  await call('file_write', {path:'/disconnect-marker.txt', content:'written immediately before disconnect', expectedRevision:null});
   await client.close();
   client = await connect();
   await call('workspace_open', {idle:true});
   assert.equal((await call('workspace_pause')).countdownActive, false);
   await call('workspace_resume', {storageKey:record.storageKey});
   assert.equal((await call('file_read',{path:'/owner-marker.txt'})).content,'survives reopening');
+  assert.equal((await call('file_read',{path:'/disconnect-marker.txt'})).content,'written immediately before disconnect');
   // Exercise a recoverable configuration fault inside this test's disposable saved site.
   const configuration = await call('file_read', { path: '/configuration.php' });
   const enabled = configuration.content.replace(/(\bpublic\s+\$debug\s*=\s*)[^;]+;/, '$1true;');

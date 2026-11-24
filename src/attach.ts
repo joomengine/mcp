@@ -138,7 +138,10 @@ export async function attachWorkspace(options: AttachOptions): Promise<Workspace
     listAttachedTabs: () => connection.list(),
     async call(operation, args) {
       if (closed) throw new Error('This Playground connection was detached.');
-      return connection.invoke(operation, args, browserHandlerSource(operation));
+      try { return await connection.invoke(operation, args, browserHandlerSource(operation)); }
+      catch (error) {
+        throw new Error(operation + ': ' + (error instanceof Error ? error.message : String(error)), { cause: error });
+      }
     },
     async close() {
       if (closed) return;

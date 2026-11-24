@@ -17,6 +17,20 @@ async function call(name, args = {}) {
   assert.notEqual(reply.isError, true, name + ': ' + output);
   return reply.structuredContent ?? JSON.parse(output);
 }
+// The installed JCB content plugins add nested Joomla parameter groups. Include
+// their declared scalar defaults, just as posting the administrator form does.
+function parameterDefaults(group) {
+  const result = {};
+  for (const [name, field] of Object.entries(group?.properties ?? {})) {
+    if (field.properties && !field.additionalProperties && field.type === 'object') {
+      const nested = parameterDefaults(field);
+      if (Object.keys(nested).length) result[name] = nested;
+    } else if (field.default !== undefined && field.default !== null && field.default !== '') {
+      result[name] = field.default;
+    }
+  }
+  return result;
+}
 // Joomla validates a candidate using the flags on that record. Supply required
 // native defaults only when the authored values alone do not validate.
 async function prepareRecord(record) {
@@ -27,7 +41,8 @@ async function prepareRecord(record) {
     const value = schema.properties[key]?.default;
     return value === undefined || value === '' || value === null ? [] : [[key, value]];
   }));
-  const fields = { ...defaults, ...record.fields };
+  const params = parameterDefaults(schema.properties.params);
+  const fields = { ...defaults, ...(Object.keys(params).length ? { params } : {}), ...record.fields };
   const checked = await call('jcb_form', { view: record.view, values: fields });
   assert.equal(checked.validation.valid, true, record.view + ': ' + checked.validation.message);
   return { ...record, fields };

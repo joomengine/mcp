@@ -38,13 +38,15 @@ export const runtimeTools = [
   }, ['path', 'content', 'expectedRevision']),
   tool('file_import', 'Write the exact binary bytes of an artifact into the editor workspace. Pass a file revision for replacement or null for creation.', { path, id, expectedRevision: revision }, ['path', 'id', 'expectedRevision']),
   tool('file_batch', 'Apply up to 128 editor changes in one worker operation. Every write needs a revision or null and content or an artifact ID. A partial failure returns applied items, recoveryId and failed index.', {
+    preconditions: { type: 'array', maxItems: 20000, items: { type: 'object', required: ['path', 'revision'], additionalProperties: false,
+      properties: { path, revision, canonicalPath: path } } },
     changes: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'object', additionalProperties: false,
       required: ['operation', 'path'], properties: { operation: choice('write','mkdir','rename','copy','delete'), path, target: path,
         expectedRevision: revision, expectedTargetRevision: revision, expectedCanonicalPath: path, expectedTargetCanonicalPath: path,
         recursive: boolean, content: { type: 'string', maxLength: 1048576 }, encoding: choice('utf8','base64'), artifactId: id } } }
   }, ['changes']),
-  tool('file_manage', 'Create a directory, rename, copy, or delete a path using the editor’s filesystem and recovery history. Use recover with the returned recoveryId to undo.', {
-    action: choice('mkdir','rename','copy','delete','recover'), path, target: path, expectedRevision: string, recursive: boolean, recoveryId: string
+  tool('file_manage', 'Create a directory, rename, copy, or delete a path using the editor’s filesystem and recovery history. To overwrite a copy or rename destination, pass its expectedTargetRevision. Use recover with the returned recoveryId to undo.', {
+    action: choice('mkdir','rename','copy','delete','recover'), path, target: path, expectedRevision: revision, expectedTargetRevision: revision, expectedCanonicalPath: path, expectedTargetCanonicalPath: path, recursive: boolean, recoveryId: string
   }, ['action']),
   tool('file_export', 'Retain a document-root file, including a compiled installer, as a downloadable binary artifact.', { path }, ['path']),
   tool('database_open', 'Install/open the native Adminer viewer for this workspace. Navigate to the returned relative path to use its schema, import, export and editing forms.', {}),
@@ -81,7 +83,8 @@ export const runtimeTools = [
   tool('site_restore', 'Restore a complete site artifact. On an attached client, supply its workspace_info workspaceId as replaceWorkspaceId to authorize replacement of that exact site. Omit it to let the client choose in the owner window.', { id, replaceWorkspaceId: id }, ['id']),
   tool('artifact_info', 'Read size, filename, MIME type and SHA-256 of a completed artifact.', { id }, ['id']),
   tool('artifact_upload_begin', 'Start an upload directly from the MCP client, with a plain filename and exact byte size. Use kind site for a complete site ZIP. No shared host directory is required.', {
-    filename: { type: 'string', minLength: 1, maxLength: 240 }, size: { type: 'integer', minimum: 0, maximum: 536870912 }, kind: choice('file','site')
+    filename: { type: 'string', minLength: 1, maxLength: 240 }, size: { type: 'integer', minimum: 0, maximum: 536870912 },
+    kind: choice('file','site'), mimeType: { type: 'string', maxLength: 127, pattern: '^[a-zA-Z0-9!#$%&^_.+-]+/[a-zA-Z0-9!#$%&^_.+-]+$' }
   }, ['filename','size','kind']),
   tool('artifact_upload_status', 'Inspect the acknowledged byte offset of a pending upload before sending more data.', { id }, ['id']),
   tool('artifact_upload_chunk', 'Append base64 for up to 256 KiB of bytes at the received offset; returns the next byte offset.', {

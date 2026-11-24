@@ -71,16 +71,20 @@ test('writes pass the editor revision and cannot accidentally replace a newly cr
 test('batch writes load exact binary artifacts, preserve revisions, and carry partial recovery results', async () => {
   const handle = runtime();
   const data = await dispatch(handle, 'file_export', { path: '/sample.bin' });
+  const preconditions = [{ path: '/src', canonicalPath: '/src', revision: 'schema-v4' }];
   const results = { ok: false, results: [{ path: '/copy.bin' }], recoveryId: 'workspace-10',
     failed: { index: 1, operation: 'mkdir', path: '/missing/folder', code: 'ENOENT' } };
   handle.workspace.request = async (operation, options) => {
     assert.equal(operation, 'batch');
+    assert.deepEqual(options.preconditions, preconditions);
+    assert.equal(options.changes[2].overwrite, true);
     assert.deepEqual(options.changes[0], { operation: 'write', path: '/copy.bin', bytes, expectedRevision: null, overwrite: false });
     return results;
   };
-  const reply = await dispatch(handle, 'file_batch', { changes: [
+  const reply = await dispatch(handle, 'file_batch', { preconditions, changes: [
     { operation: 'write', path: '/copy.bin', artifactId: data.id, expectedRevision: null },
     { operation: 'mkdir', path: '/missing/folder' },
+    { operation: 'rename', path: '/from', target: '/to', expectedTargetRevision: 'observed-hash' },
   ] });
   assert.equal(reply.isError, true);
   assert.deepEqual(reply.structuredContent, results);
@@ -106,7 +110,7 @@ test('mail headers, debug paging and Adminer URL stay tied to the selected works
 test('direct client upload can resume after a lost acknowledgement and only verified bytes become usable', async () => {
   const site = runtime();
   await assert.rejects(dispatch(site, 'artifact_upload_begin', { size: 2, kind: 'file', filename: '../foo' }), /plain artifact filename/);
-  const upload = await dispatch(site, 'artifact_upload_begin', { size: 3, kind: 'file', filename: 'x.bin' });
+  const upload = await dispatch(site, 'artifact_upload_begin', { size: 3, kind: 'file', filename: 'proof.png' });
   await dispatch(site, 'artifact_upload_chunk', { id: upload.id, offset: 0, base64: 'AQI=' });
   assert.equal((await dispatch(site, 'artifact_upload_status', upload)).received, 2);
   await assert.rejects(dispatch(site, 'artifact_info', upload), /unavailable/);
@@ -114,6 +118,7 @@ test('direct client upload can resume after a lost acknowledgement and only veri
   const sha256 = createHash('sha256').update(Buffer.from([1,2,3])).digest('hex');
   await assert.rejects(dispatch(site, 'artifact_upload_finish', { ...upload, sha256: '0'.repeat(64) }), /SHA-256/);
   const receipt = await dispatch(site, 'artifact_upload_finish', { ...upload, sha256 });
+  assert.equal(receipt.mimeType, 'image/png');
   assert.deepEqual(await dispatch(site, 'artifact_upload_finish', { ...upload, sha256 }), receipt);
   assert.equal((await dispatch(site, 'artifact_read', upload)).base64, 'AQID');
 });

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { getSkillPrompt, listSkillResources, readSkillResource, skillPrompts } from '../dist/skills.js';
+process.env.JOOMENGINE_SKILLS_OFFLINE = '1';
+const { getSkillPrompt, listSkillPrompts, listSkillResources, readSkillResource, searchSkills } = await import('../dist/skills.js');
 
 const bundle = new URL('../skills/', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('manifest.json', bundle), 'utf8'));
@@ -41,7 +42,10 @@ test('relative Markdown links, registry data and binary evidence resolve offline
 });
 
 test('workflow prompts embed the canonical root and corresponding packaged instructions', async () => {
-  for (const { name } of skillPrompts) {
+  const prompts = await listSkillPrompts();
+  const skills = JSON.parse((await readSkillResource('joomengine://skills/registries/skills.json')).contents[0].text);
+  for (const skill of skills.skills) assert(prompts.some(prompt => prompt.name === 'skill_' + skill.name));
+  for (const { name } of prompts) {
     const prompt = await getSkillPrompt(name);
     const [root, workflow] = prompt.messages.filter(message => message.content.type === 'resource');
     assert.equal(root.content.resource.uri, start);
@@ -49,4 +53,15 @@ test('workflow prompts embed the canonical root and corresponding packaged instr
     assert.equal(workflow.content.resource.text, source.text);
   }
   await assert.rejects(getSkillPrompt('unknown'), { code: -32602 });
+});
+
+test('tool-only clients search the canonical guides and key results to their query and snapshot', async () => {
+  const result = await searchSkills('playground');
+  assert.equal(result.revision, manifest.revision);
+  assert(result.results.some(entry => /playground/.test(entry.path)));
+  assert(result.total > result.results.length);
+  const more = await searchSkills('playground', result.nextCursor);
+  const seen = new Set(result.results.map(entry => entry.uri));
+  assert(more.results.every(entry => !seen.has(entry.uri)));
+  await assert.rejects(searchSkills('powers', result.nextCursor), { code: -32602 });
 });

@@ -86,7 +86,8 @@ try {
   ] });
   assert(batch.ok && batch.recoveryId);
   assert((await call('file_history')).items.some(item => item.id === batch.recoveryId));
-  const search = await call('file_search', { path: scratch, kind: 'text', query: 'editor', isWordMatch: true, include: ['**/*.txt'], maxResults: 1 });
+  let search = await call('file_search', { path: scratch, kind: 'text', query: 'editor', isWordMatch: true, include: ['**/*.txt'], maxResults: 1 });
+  while (!search.results.length && search.cursor) search = await call('file_search', { cursor: search.cursor, maxResults: 1 });
   assert(search.results.some(item => item.path.endsWith('/note.txt')));
   if (search.cursor) assert((await call('file_search_cancel', { cursor: search.cursor })).cancelled);
   await call('file_manage', { action: 'recover', recoveryId: batch.recoveryId });
@@ -187,6 +188,10 @@ try {
   const storage = await call('storage_list');
   assert(Array.isArray(storage.items));
   assert.equal((await request('storage_remove', { id: 'native:missing' })).isError, true);
+  const checkpoint = await call('workspace_recovery_export');
+  assert(checkpoint.size > 1000);
+  assert.equal(checkpoint.mimeType, 'application/zip');
+  await call('artifact_release', { id: checkpoint.id });
   await call('workspace_close');
   await call('workspace_open', { deployId: 'blank' });
   const uploaded = await call('artifact_load', { filename: saved.filename, kind: 'site' });

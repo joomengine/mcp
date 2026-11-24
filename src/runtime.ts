@@ -65,10 +65,14 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
     return value;
   }
   function upstream(module: string) {
-    const base = new URL(runtime.baseUrl);
-    const index = base.pathname.indexOf('/__site/');
-    if (index === -1 || base.origin !== location.origin) throw new Error('Invalid Playground site base URL.');
-    base.pathname = base.pathname.slice(0, index + 1);
+    // Named backups and storage belong to the browser profile and remain usable while PHP is stopped.
+    const base = new URL(runtime.agentModuleBase ?? runtime.baseUrl);
+    if (base.origin !== location.origin) throw new Error('Invalid Playground origin.');
+    if (runtime.agentModuleBase === undefined) {
+      const index = base.pathname.indexOf('/__site/');
+      if (index === -1) throw new Error('Invalid Playground site base URL.');
+      base.pathname = base.pathname.slice(0, index + 1);
+    } else if (!base.pathname.endsWith('/')) base.pathname += '/';
     base.search = ''; base.hash = '';
     return import(new URL('src/' + module, base).href);
   }
@@ -87,6 +91,9 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
     return input.encoding === 'base64' ? Uint8Array.from(atob(input.content), c => c.charCodeAt(0)) : encoder.encode(input.content);
   }
   function fileChange(input: Record<string, any>) {
+    if (input.operation === 'copy' || input.operation === 'rename') {
+      return { ...input, overwrite: typeof input.expectedTargetRevision === 'string' };
+    }
     if (input.operation !== 'write') return input;
     if (input.expectedRevision !== null && typeof input.expectedRevision !== 'string') throw new Error('Supply the existing revision, or null to create a new file.');
     const { content, artifactId, encoding, id, ...fields } = input;
@@ -166,14 +173,17 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
       return fileReceipt(await runtime.workspace.request('write', edit));
     }
     case 'file_batch':
-      return fileReceipt(await runtime.workspace.request('batch', { changes: args.changes.map(fileChange) }));
+      return fileReceipt(await runtime.workspace.request('batch', { changes: args.changes.map(fileChange), preconditions: args.preconditions }));
     case 'file_manage': {
       const action = args.action;
       if (action === 'recover') return fileReceipt(await runtime.workspace.request('recover', { recoveryId: text(args.recoveryId, 'Recovery ID') }));
       if (!['mkdir','delete','copy','rename'].includes(action)) throw new Error('Unsupported file operation.');
       const path = text(args.path, 'File path');
       const target = ['copy','rename'].includes(action) ? text(args.target, 'Destination path') : undefined;
-      return fileReceipt(await runtime.workspace.request(action, { path, target, recursive: args.recursive, expectedRevision: args.expectedRevision }));
+      const { operation: _, ...change } = fileChange({ path, target, operation: action, recursive: args.recursive,
+        expectedRevision: args.expectedRevision, expectedTargetRevision: args.expectedTargetRevision,
+        expectedCanonicalPath: args.expectedCanonicalPath, expectedTargetCanonicalPath: args.expectedTargetCanonicalPath });
+      return fileReceipt(await runtime.workspace.request(action, change));
     }
     case 'file_export': {
       const path = text(args.path, 'File path');
@@ -366,10 +376,13 @@ try {
       if (encoder.encode(filename).length > 240 || /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(filename) || /[. ]$/.test(filename)
         || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) throw new Error('Choose a plain artifact filename.');
       if (size < 0 || !['site','file'].includes(args.kind)) throw new Error('Invalid upload metadata.');
+      const extensions: Record<string, string> = { zip: 'application/zip', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        webp: 'image/webp', gif: 'image/gif', json: 'application/json', sql: 'application/sql', csv: 'text/csv', eml: 'message/rfc822', txt: 'text/plain' };
+      const mimeType = args.mimeType ?? extensions[filename.split('.').pop()!.toLowerCase()] ?? 'application/octet-stream';
+      if (typeof mimeType !== 'string' || mimeType.length > 127 || !/^[a-zA-Z0-9!#$%&^_.+-]+\/[a-zA-Z0-9!#$%&^_.+-]+$/.test(mimeType)) throw new Error('Invalid MIME type.');
       reserve(size);
       const id = crypto.randomUUID();
-      artifacts.set(id, { bytes: new Uint8Array(size), written: 0, uploading: true, kind: args.kind, filename,
-        mimeType: filename.toLowerCase().endsWith('.zip') ? 'application/zip' : 'application/octet-stream' });
+      artifacts.set(id, { bytes: new Uint8Array(size), written: 0, uploading: true, kind: args.kind, filename, mimeType });
       return { id };
     }
     case 'artifact_upload_status': {

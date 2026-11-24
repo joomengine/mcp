@@ -99,6 +99,12 @@ try {
     }
     $form = $ctx['model']->getForm($values, false);
     if (!$form) throw new RuntimeException('The native configuration form is unavailable.');
+    foreach (array_keys($playground['values']) as $name) {
+        if (!$form->getField($name) && !$form->getGroup($name, true)) {
+            $validation = ['valid' => false, 'message' => 'The native administrator form does not support field ' . $name . '.'];
+            break;
+        }
+    }
     $form->bind($values);
     $schema = playgroundDataSchema($form, $ctx['metadata']);
     $fields = (array) $schema['properties'];

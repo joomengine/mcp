@@ -103,7 +103,8 @@ export async function deploymentDispatch(runtime: Data, operation: string, args:
     if (args.replaceWorkspaceId !== (workspaceId ?? undefined)) throw new Error('The supplied workspaceId does not match the current site.');
     if (!app.getOwnerWorkspace) throw new Error('Use a current Playground owner to start an independent deployment in this window.');
     if (operation === 'deployment_clone') return owner(workspaceId, 'clone', args.configuration ?? {});
-    return app.getOwnerWorkspace().perform('open', { ...args.source, replaceWorkspaceId: args.replaceWorkspaceId });
+    const controls = runtime.agentOwner?.perform ? runtime.agentOwner : app.getOwnerWorkspace();
+    return controls.perform('open', { ...args.source, replaceWorkspaceId: args.replaceWorkspaceId });
   }
   const registry = await load('deployment-registry');
   const key = registry.deploymentRegistryKey(base);

@@ -1,5 +1,5 @@
 // Serialized into the selected owner page. All browser-side dependencies come from that Playground release.
-export async function connectOwner(base: string, agentOwned = false) {
+export async function connectOwner(base: string, cloudSite?: 'fresh' | 'existing') {
   const app = new URL(base);
   if (location.origin !== app.origin || ![app.pathname, app.pathname + 'index.html'].includes(location.pathname)) {
     throw new Error('The selected tab navigated away from Playground.');
@@ -13,7 +13,16 @@ export async function connectOwner(base: string, agentOwned = false) {
     const scopes = new WeakMap<object, Record<PropertyKey, any>>();
     const idle = Object.create(null);
     let disposed = false;
-    const created = agentOwned ? owner.getRuntime() : undefined;
+    const createdSites = new WeakSet<object>();
+    if (cloudSite === 'fresh' && owner.getRuntime()) createdSites.add(owner.getRuntime());
+    const controls = {
+      state: owner.state,
+      async perform(action: string, input: Record<string, unknown>) {
+        const result = await owner.perform(action, input);
+        if (cloudSite && action === 'open' && owner.getRuntime()) createdSites.add(owner.getRuntime());
+        return result;
+      }
+    };
     return {
       agentCurrent() {
         if (disposed) throw new Error('The owner was detached.');
@@ -22,10 +31,10 @@ export async function connectOwner(base: string, agentOwned = false) {
         let scope = scopes.get(handle);
         if (!scope) {
           scope = {
-            agentModuleBase: app.href, agentOwner: owner, agentOwned: !!site && created === site,
+            agentModuleBase: app.href, agentOwner: controls, agentOwned: !!site && createdSites.has(site),
             [Symbol.for('joomengine.mcp.artifacts')]: artifacts,
             agentRestore: (archive: Uint8Array, replaceWorkspaceId?: string) => owner.perform('restore', {
-              archive, replaceWorkspaceId: replaceWorkspaceId ?? (agentOwned ? site?.workspace?.id : undefined),
+              archive, replaceWorkspaceId: replaceWorkspaceId ?? (site && createdSites.has(site) ? site.workspace.id : undefined),
             })
           };
           scopes.set(handle, scope);

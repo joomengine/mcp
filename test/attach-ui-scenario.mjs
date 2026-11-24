@@ -5,6 +5,7 @@ export async function exerciseWorkspaceSurfaces(call) {
   const shell = { scope: 'playground' };
   let page = await call('browser_inspect', { ...shell, waitForSelector: '#nav-admin:enabled' });
   assert(page.controls.some((control) => control.id === 'nav-admin'));
+  await call('browser_inspect', { scope: 'site', waitForSelector: 'body', timeoutMs: 120000 });
   const shot = await call('browser_screenshot', { scope: 'site' });
   const receipt = shot.structuredContent ?? shot;
   assert.equal(receipt.mimeType, 'image/png');

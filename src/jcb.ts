@@ -1,0 +1,121 @@
+/** JCB's browser compiler and the Joomla installer operate on the selected live site. */
+type Schema = Record<string, unknown>;
+const tool = (name: string, description: string, properties: Record<string, Schema> = {}, required: string[] = []) => ({
+  name, description, inputSchema: { type: 'object' as const, properties, required, additionalProperties: false }
+});
+const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_]*$' };
+export const jcbTools = [
+  tool('jcb_list_components', 'List component IDs, names, and supported target versions from the authenticated JCB compiler.'),
+  tool('jcb_compile', 'Compile a saved JCB component through its installed administrator form. Returns verified ZIP paths and hashes. Use file_export on those paths to retain installers.', {
+    componentId: { type: 'integer', minimum: 1 },
+    joomlaMajor: { type: 'integer', minimum: 3, description: 'Defaults to the active Joomla major.' }
+  }, ['componentId']),
+  tool('extension_install', 'Install one extension ZIP on the selected site. Supply an artifact ID from file_export or an HTTPS URL.', {
+    artifactId: { type: 'string', minLength: 1 }, url: { type: 'string', minLength: 1 }
+  }),
+  tool('extension_enable_plugin', 'Enable an installed plugin using the native Joomla plugin administrator model.', { folder: identifier, element: identifier }, ['folder', 'element']),
+  tool('jcb_refresh_tools', 'Synchronize the native Joomla MCP catalogue with currently installed JCB and enabled extension APIs.')
+];
+
+// Serialized into both agent-owned and attached browser workspaces. Keep helpers local.
+export async function jcbDispatch(runtime: any, operation: string, args: Record<string, unknown>) {
+  const site = new URL(runtime.baseUrl);
+  const base = new URL(runtime.agentModuleBase ?? '../../../', site);
+  const moduleUrl = new URL('src/joomla/index.mjs', base).href;
+  if (base.origin !== site.origin) throw new Error('The Joomla provisioning module must share the Playground origin.');
+  if (operation === 'extension_install') {
+    const { installExtension, installExtensionFromURL } = await import(moduleUrl);
+    if (Boolean(args.artifactId) === Boolean(args.url)) throw new Error('Supply exactly one artifactId or HTTPS url.');
+    if (args.url) {
+      const url = new URL(String(args.url));
+      if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Supply an HTTPS package URL without embedded credentials.');
+      await installExtensionFromURL(runtime, url.href);
+      return { installed: true };
+    }
+    const artifact = runtime[Symbol.for('joomengine.mcp.artifacts')]?.get(args.artifactId);
+    if (!artifact || artifact.uploading || artifact.kind !== 'file' || !/\.zip$/i.test(artifact.filename) ||
+        artifact.bytes?.[0] !== 0x50 || artifact.bytes?.[1] !== 0x4b) throw new Error('Select an extension ZIP retained by file_export.');
+    await installExtension(runtime, artifact.bytes);
+    return { installed: true, filename: artifact.filename };
+  }
+  if (operation === 'extension_enable_plugin') {
+    for (const key of ['folder', 'element']) {
+      if (typeof args[key] !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(args[key] as string)) throw new Error('Invalid Joomla plugin identity.');
+    }
+    const { applyJoomlaOverlays } = await import(moduleUrl);
+    const result = await applyJoomlaOverlays(runtime, [{
+      key: `mcp.enable.${args.folder}.${args.element}`, kind: 'plugin', folder: args.folder, element: args.element, fields: { enabled: 1 }
+    }], { admin: runtime.installation?.administrator });
+    const plugin = result.results[0];
+    if (plugin?.status !== 'applied') throw new Error(plugin?.notice || 'Joomla could not enable the selected plugin.');
+    return { enabled: true, folder: args.folder, element: args.element, id: plugin.id };
+  }
+  if (operation === 'jcb_refresh_tools') {
+    const { runStartupCommand } = await import(moduleUrl);
+    const result = await runStartupCommand(runtime, ['joomla:mcp:jcb-sync']);
+    return { refreshed: true, output: String(result.output ?? '').slice(-8192) };
+  }
+  if (operation !== 'jcb_list_components' && operation !== 'jcb_compile') throw new Error('Unknown JCB operation.');
+  const route = 'administrator/index.php?option=com_componentbuilder&view=compiler';
+  function localPath(value: URL) {
+    if (value.origin !== site.origin || !value.pathname.startsWith(site.pathname) || value.username || value.password) {
+      throw new Error('JCB returned a URL outside the selected site.');
+    }
+    return value.pathname.slice(site.pathname.length) + value.search;
+  }
+  async function page(routeUrl: URL, body?: URLSearchParams) {
+    let url = routeUrl;
+    let response = await runtime.request(localPath(url), body ? {
+      method: 'POST', body: body.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeoutMs: 600_000
+    } : {});
+    for (let redirects = 0; [301, 302, 303, 307, 308].includes(response.status); redirects++) {
+      if (body && [307, 308].includes(response.status)) throw new Error('JCB redirected the POST without completing it. Inspect the compiler before retrying.');
+      const location = response.headers.get('Location');
+      if (!location || redirects >= 8) throw new Error('Invalid Joomla compiler redirect.');
+      url = new URL(location, url);
+      response = await runtime.request(localPath(url));
+      body = undefined;
+    }
+    if (!response.ok) throw new Error(`JCB compiler request returned HTTP ${response.status}.`);
+    return { doc: new DOMParser().parseFromString(await response.text(), 'text/html'), url };
+  }
+  const compiler = await page(new URL(route, site));
+  const form = compiler.doc.querySelector<HTMLFormElement>('form#adminForm');
+  if (!form || compiler.doc.querySelector('input[name="passwd"]')) throw new Error('Sign in to Joomla with access to the installed JCB compiler.');
+  const component = form.querySelector<HTMLSelectElement>('select#component_id');
+  const version = form.querySelector<HTMLSelectElement>('select#joomla_version');
+  const components = [...(component?.options ?? [])].filter(o => /^[1-9]\d*$/.test(o.value)).map(o => ({ id: Number(o.value), name: o.label.trim() }));
+  const versions = [...(version?.options ?? [])].filter(o => /^\d+$/.test(o.value)).map(o => Number(o.value));
+  if (operation === 'jcb_list_components') return { components, joomlaMajors: versions };
+  const selected = components.find(item => item.id === args.componentId);
+  const major = Number(args.joomlaMajor ?? String(runtime.configuration.joomlaVersion).split('.')[0]);
+  if (!component || !version || !selected || !versions.includes(major)) throw new Error('Choose a component ID and target Joomla major from jcb_list_components.');
+  const data = new URLSearchParams();
+  for (const [key, value] of new FormData(form)) if (typeof value === 'string') data.append(key, value);
+  if (![...data].some(([k, v]) => /^[a-f0-9]{32}$/i.test(k) && v === '1')) throw new Error('JCB did not supply the Joomla session form token.');
+  data.set(component.name, String(selected.id));
+  data.set(version.name, String(major));
+  data.set('task', 'compiler.compiler');
+  const result = await page(new URL(form.getAttribute('action') || compiler.url.href, compiler.url), data);
+  // Only accept archives from the success layout of this submission.
+  const success = result.doc.querySelector('.com-componentbuilder-compiler-success');
+  const errors = [...result.doc.querySelectorAll('#system-message-container, joomla-alert[type="danger"], .alert-danger')].map(n => n.textContent ?? '').join(' ');
+  const failure = /Fatal error|Maximum execution time|Undefined constant|SQLSTATE|(?:Super|Joomla)\s+Power\s+repository\b[\s\S]{0,250}?gave the following error|Power\s+guid:\s*[a-f0-9-]+\s+(?:not found|could not be found)|Failed to (?:fetch|connect to)\b/i.test(errors);
+  if (!success || failure) throw new Error('JCB did not report a successful compile. Inspect the compiler messages and dependency availability.');
+  const packages: { path: string; filename: string; size: number; sha256: string }[] = [];
+  const paths = new Set<string>();
+  for (const link of success.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const url = new URL(link.getAttribute('href')!, result.url);
+    if (!url.pathname.toLowerCase().endsWith('.zip')) continue;
+    const path = localPath(url);
+    if (!/^tmp\/[A-Za-z0-9_.-]+\.zip$/i.test(path) || paths.has(path)) continue;
+    paths.add(path);
+    const bytes = new Uint8Array(await runtime.fs.readFile(`${runtime.documentRoot}/${path}`));
+    if (bytes.length < 22 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 3 || bytes[3] !== 4) throw new Error('JCB returned an invalid installer ZIP.');
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    packages.push({ path: '/' + path, filename: path.split('/').pop()!, size: bytes.length, sha256: [...digest].map(n => n.toString(16).padStart(2, '0')).join('') });
+  }
+  if (!packages.length) throw new Error('JCB reported success without an accessible installer ZIP.');
+  return { componentId: selected.id, name: selected.name, joomlaMajor: major, packages };
+}

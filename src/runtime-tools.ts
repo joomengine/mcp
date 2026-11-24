@@ -51,7 +51,7 @@ export const runtimeTools = [
   tool('backup_list', 'List intentional backups saved in the current Playground browser profile.', { offset, limit: { type: 'integer', minimum: 1, maximum: 250 } }),
   tool('backup_save', 'Save a complete site archive in the Playground Backups panel.', { name: string }),
   tool('backup_export', 'Retain an existing backup as a downloadable site artifact.', { id }, ['id']),
-  tool('site_restore', 'Restore a complete site artifact in an agent-owned workspace. The active site switches after import succeeds.', { id }, ['id']),
+  tool('site_restore', 'Restore a complete site artifact. An agent-owned workspace switches after import succeeds; a client workspace uses the owner window’s Upload flow.', { id }, ['id']),
   tool('artifact_read', 'Read a bounded base64 chunk from an exported file. Use nextOffset until null and verify the SHA-256 from the export.', { id, offset, length }, ['id']),
   tool('artifact_release', 'Release an exported artifact from this workspace connection after transfer.', { id }, ['id'])
 ];

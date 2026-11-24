@@ -1,0 +1,71 @@
+name: Verify Playground MCP
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  package:
+    name: TypeScript, MCP protocol and installable package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run skills
+      - run: npm run build
+      - run: npm test
+      - run: npm pack --ignore-scripts
+      - name: Install and invoke the packed CLI outside the checkout
+        run: |
+          archive=$(realpath joomengine-mcp-*.tgz)
+          cd "$RUNNER_TEMP"
+          npm install --prefix package-check "$archive"
+          package-check/node_modules/.bin/joomengine-playground-mcp --help
+          test -s package-check/node_modules/@joomengine/mcp/skills/joomengine-jcb/SKILL.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joomengine-mcp
+          path: joomengine-mcp-*.tgz
+  cloud:
+    name: Hosted Playground (${{ matrix.recipe }})
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: [blank, jcb-mcp]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: node test/cloud-live.mjs ${{ matrix.recipe }}
+  component:
+    name: Build, install, exercise and restore a JCB extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run skills
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: node test/jcb-live.mjs

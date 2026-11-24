@@ -72,7 +72,7 @@ jobs:
   browser-attachment:
     name: Attach and reconnect (${{ matrix.browser }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -84,6 +84,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run skills
       - run: npm run build
       - uses: actions/checkout@v4
         with:

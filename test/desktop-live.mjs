@@ -2,15 +2,17 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, unlink } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { DebugConnection } from '../dist/attach-wire.js';
+import { armRestoreConfirmation } from './confirm-restore.mjs';
+import { exerciseJcb } from './jcb-scenario.mjs';
 
 const binary = process.argv[2];
 if (!binary) throw new Error('Pass the path to the JoomEngine Desktop executable.');
@@ -48,27 +50,35 @@ function dashboardState() {
 
 async function waitForDesktop(endpoint, child) {
   let lastState = 'starting Qt';
+  let selectedRecipe = false;
   const deadline = Date.now() + 12 * 60_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) throw new Error('The desktop process exited during startup.');
     let wire;
-    let state;
+    let state, debuggerUrl;
     try {
       const discovery = await fetch(endpoint + '/json/list', { signal: AbortSignal.timeout(4000) });
       const tabs = await discovery.json();
       const tab = tabs.find(item => item.type === 'page' && new URL(item.url).origin === 'https://playground.joomengine.org'
         && new URL(item.url).pathname === '/');
       if (tab) {
-        wire = await DebugConnection.open(new URL(tab.webSocketDebuggerUrl));
-        const reply = await wire.request('Runtime.evaluate', { expression: '(' + dashboardState + ')()', returnByValue: true }, 8000);
-        state = reply.result?.value;
+        debuggerUrl = new URL(tab.webSocketDebuggerUrl);
+        wire = await DebugConnection.open(debuggerUrl);
+        if (!selectedRecipe) {
+          const navigation = await wire.request('Page.navigate', { url: 'https://playground.joomengine.org/?deploy=jcb-mcp&immediate=1' }, 15000);
+          if (navigation.errorText) throw new Error(navigation.errorText);
+          selectedRecipe = true;
+        } else {
+          const reply = await wire.request('Runtime.evaluate', { expression: '(' + dashboardState + ')()', returnByValue: true }, 8000);
+          state = reply.result?.value;
+        }
       }
     } catch (error) {
       // A startup navigation can replace this target between discovery and evaluation.
       lastState = error.message;
     } finally { wire?.close(); }
     if (state?.error) throw new Error('Playground failed to start JCB: ' + state.error);
-    if (state?.phase === 'ready') return;
+    if (state?.phase === 'ready') return debuggerUrl;
     if (state?.phase && state.phase !== lastState) {
       lastState = state.phase;
       console.log('Desktop is ' + lastState);
@@ -100,18 +110,34 @@ const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 const endpoint = 'http://127.0.0.1:' + port;
 const profile = await mkdtemp(path.join(tmpdir(), 'joomengine-desktop-mcp-'));
-const child = spawn(path.resolve(binary), [], { stdio: 'inherit', env: {
-  ...process.env, QTWEBENGINE_REMOTE_DEBUGGING: '127.0.0.1:' + port,
-  XDG_DATA_HOME: path.join(profile, 'data'), XDG_CONFIG_HOME: path.join(profile, 'config'), XDG_CACHE_HOME: path.join(profile, 'cache'),
-} });
-let client;
+let child, client, macDataLink;
 try {
+  const env = { ...process.env };
+  if (process.platform === 'win32') {
+    env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-address=127.0.0.1 --remote-debugging-port=' + port;
+    env.WEBVIEW2_USER_DATA_FOLDER = path.join(profile, 'webview2');
+  } else {
+    env.QTWEBENGINE_REMOTE_DEBUGGING = '127.0.0.1:' + port;
+    if (process.platform === 'darwin') {
+      // The released macOS app uses its fixed Application Support folder.
+      // symlink() refuses to replace an existing user's desktop profile.
+      const data = path.join(homedir(), 'Library', 'Application Support', 'JoomEngine');
+      await mkdir(path.dirname(data), { recursive: true });
+      await symlink(profile, data);
+      macDataLink = data;
+    } else {
+      env.XDG_DATA_HOME = path.join(profile, 'data');
+      env.XDG_CONFIG_HOME = path.join(profile, 'config');
+      env.XDG_CACHE_HOME = path.join(profile, 'cache');
+    }
+  }
+  child = spawn(path.resolve(binary), [], { stdio: 'inherit', env });
   await once(child, 'spawn');
-  await waitForDesktop(endpoint, child);
+  const debuggerUrl = await waitForDesktop(endpoint, child);
   client = await connectClient(endpoint);
   const workspace = await call(client, 'workspace_attach');
   assert(workspace.healthy && workspace.workspaceId);
-  assert.match(workspace.deployId, /^jcb(?:-mcp)?$/);
+  assert.equal(workspace.deployId, 'jcb-mcp');
   const marker = randomUUID();
   const file = '/tmp/mcp-desktop-' + marker + '.txt';
   await call(client, 'file_write', { path: file, content: marker, expectedRevision: null });
@@ -126,18 +152,26 @@ try {
   assert.equal((await call(client, 'file_read', { path: file })).content, marker);
   const rows = await call(client, 'database_query', { sql: 'SELECT value FROM mcp_desktop_test WHERE value = ?', parameters: [marker] });
   assert.deepEqual(rows.rows, [{ value: marker }]);
-  await call(client, 'workspace_close');
   assert.equal(child.exitCode, null);
   console.log('A fresh MCP client reattached to the same JCB desktop site and verified the saved file and MariaDB row.');
+  await exerciseJcb(client, { beforeRestore: async () => {
+    const wire = await DebugConnection.open(debuggerUrl);
+    try {
+      const reply = await wire.request('Runtime.evaluate', { expression: '(' + armRestoreConfirmation + ')()' });
+      assert(!reply.exceptionDetails, 'The desktop owner could not prepare its test restore confirmation.');
+    } finally { wire.close(); }
+  } });
+  await call(client, 'workspace_close');
 } finally {
   try { await client?.close(); }
   finally {
-    if (child.pid && child.exitCode === null && child.signalCode === null) {
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
       const stopped = once(child, 'exit');
       child.kill('SIGTERM');
       const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
       try { await stopped; } finally { clearTimeout(timer); }
     }
-    await rm(profile, { recursive: true, force: true, maxRetries: 3 });
+    if (macDataLink) await unlink(macDataLink);
+    await rm(profile, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 });
   }
 }

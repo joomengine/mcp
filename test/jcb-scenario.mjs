@@ -47,6 +47,12 @@ export async function exerciseJcb(client, { replaceWorkspaceId } = {}) {
   const call = (name, args) => invoke(client, name, args);
   const native = (name, args) => call('native_call', { name, arguments: args });
   const available = await call('jcb_list_components');
+  const traceOptions = {};
+  for (const name of ['add_placeholders', 'debug_line_nr']) {
+    const field = available.compilerOptions.find(entry => entry.name === name);
+    assert(field?.choices.some(choice => choice.value === '1'), 'The native compiler must expose the ' + name + ' tracing override');
+    traceOptions[name] = '1';
+  }
   const demo = available.components.find(c => c.name === 'Demo J6');
   assert.ok(demo, 'The JCB recipe must contain its Demo J6 component');
   const { tablePrefix } = await call('database_query', { sql: 'SELECT 1' });
@@ -80,7 +86,8 @@ export async function exerciseJcb(client, { replaceWorkspaceId } = {}) {
   const plugins = async () => new Set((await sql("SELECT element FROM " + tablePrefix + "extensions WHERE type = 'plugin' AND folder = 'webservices'")).rows.map(row => row.element));
   const before = await plugins();
   console.log('Compile the authored definition and retrieve its exact package bytes over MCP');
-  const compiled = await call('jcb_compile', { componentId: demo.id, joomlaMajor: 6 });
+  const compiled = await call('jcb_compile', { componentId: demo.id, joomlaMajor: 6, options: traceOptions });
+  assert.deepEqual(compiled.options, traceOptions);
   const component = compiled.packages.find(p => /^com_demo_v1_3_7__J6\.zip$/i.test(p.filename));
   const webservices = compiled.packages.find(p => /^plg_webservices_/i.test(p.filename));
   assert.ok(component && webservices, 'JCB must deliver the authored component version and its linked webservices plugin');

@@ -72,19 +72,6 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
     base.search = ''; base.hash = '';
     return import(new URL('src/' + module, base).href);
   }
-  async function native(method: string, params: object) {
-    const conn = await runtime.getMcpConnection();
-    if (!conn?.installed || !conn.token) throw new Error('The native Joomla MCP is unavailable. Open a JCB + MCP deployment or install the native MCP package.');
-    const { createMcpClient } = await upstream('mcp.mjs');
-    const client = createMcpClient({ request: runtime.request.bind(runtime), token: conn.token });
-    try {
-      await client.initialize();
-      return await client.request(method, params);
-    } finally {
-      // A transport cleanup error cannot retroactively fail a committed Joomla action.
-      await client.close().catch(() => {});
-    }
-  }
   function backupSummary(record: any) {
     const { id, revision, name, size, filename, updatedAt, sourceSiteKey, siteName, joomlaVersion, jcbVersion, phpVersion } = record;
     return { id, revision, name, size, filename, updatedAt, sourceSiteKey, siteName, joomlaVersion, jcbVersion, phpVersion };
@@ -103,7 +90,7 @@ export async function dispatch(runtime: any, operation: string, args: Record<str
       const config = runtime.configuration ?? {};
       const installed = runtime.installation ?? {};
       return {
-        workspaceId: runtime.workspace.id, siteName: installed.siteName ?? config.siteName,
+        ...runtime.agentOwner?.state(), workspaceId: runtime.workspace.id, siteName: installed.siteName ?? config.siteName,
         deployId: config.deployId, siteUrl: runtime.baseUrl, joomlaVersion: installed.version ?? config.joomlaVersion,
         jcbVersion: config.jcbVersion, phpVersion: runtime.runtimeInfo?.phpVersion ?? config.phpVersion,
         healthy: !!runtime.healthy, persistent: !!config.persistence, lastSavedAt: runtime.lastSavedAt,
@@ -219,10 +206,6 @@ try {
       }
       return { ...summary, attachments: parsed?.attachments ?? [], format, content };
     }
-    case 'native_tools':
-      return native('tools/list', args.cursor ? { cursor: args.cursor } : {});
-    case 'native_call':
-      return native('tools/call', { name: text(args.name, 'Native tool name'), arguments: args.arguments ?? {} });
     case 'debug_control': {
       const debug = runtime.debugger;
       const requestKey = Symbol.for('joomengine.mcp.debug-request');

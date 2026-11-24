@@ -5,16 +5,20 @@ const tool = (name: string, description: string, properties: Record<string, Sche
 });
 const identifier = { type: 'string', pattern: '^[a-z][a-z0-9_]*$' };
 export const jcbTools = [
-  tool('jcb_list_components', 'List component IDs, names, and supported target versions from the authenticated JCB compiler.'),
+  tool('site_console', 'Run an installed Joomla console command inside the selected Playground runtime. Use ["list","--raw"] to discover available commands or ["help",name] for arguments. Returns the native Joomla output and exit code.', {
+    argv: { type: 'array', minItems: 1, maxItems: 64, items: { type: 'string' }, description: 'Joomla command name followed by individual arguments.' }
+  }, ['argv']),
+  tool('jcb_list_components', 'List component IDs, supported Joomla versions and available compilation options from the installed JCB administrator compiler form.'),
   tool('jcb_form', 'Describe editable fields on this installation’s native JCB administrator form before using jcb_save_records. Returns its JSON Schema with types, required fields, defaults, choices and relationship metadata where available. Optionally select individual fields.', {
     view: identifier, fields: { type: 'array', minItems: 1, uniqueItems: true, items: identifier },
     values: { type: 'object', description: 'Candidate source fields for a new record. Runs native validation without saving and describes the fields accepted for that input.' }
   }, ['view']),
   tool('jcb_compile', 'Compile a saved JCB component through its installed administrator form. Returns verified ZIP paths and hashes. Use file_export on those paths to retain installers.', {
     componentId: { type: 'integer', minimum: 1 },
-    joomlaMajor: { type: 'integer', minimum: 3, description: 'Defaults to the active Joomla major.' }
+    joomlaMajor: { type: 'integer', minimum: 3, description: 'Defaults to the active Joomla major.' },
+    options: { type: 'object', additionalProperties: { type: 'string' }, description: 'Override named fields from jcb_list_components.compilerOptions for this compilation. Pass the exact field name and option value returned by this site.' }
   }, ['componentId']),
-  tool('extension_install', 'Install one extension ZIP on the selected site. Supply an artifact ID from file_export or an HTTPS URL.', {
+  tool('extension_install', 'Install one extension ZIP on the selected site. Supply an artifact ID from file_export or an HTTP(S) package URL.', {
     artifactId: { type: 'string', minLength: 1 }, url: { type: 'string', minLength: 1 }
   }),
   tool('extension_enable_plugin', 'Enable an installed plugin using the native Joomla plugin administrator model.', { folder: identifier, element: identifier }, ['folder', 'element']),
@@ -44,12 +48,17 @@ export async function jcbDispatch(runtime: any, operation: string, args: Record<
     });
     return parseProvisioningResult(await runtime.runPhp(source, { timeoutMs: 600_000 }));
   }
+  if (operation === 'site_console') {
+    const { runStartupCommand } = await import(moduleUrl);
+    const result = await runStartupCommand(runtime, args.argv);
+    return { exitCode: result.exitCode, output: result.output };
+  }
   if (operation === 'extension_install') {
     const { installExtension, installExtensionFromURL } = await import(moduleUrl);
-    if (Boolean(args.artifactId) === Boolean(args.url)) throw new Error('Supply exactly one artifactId or HTTPS url.');
+    if (Boolean(args.artifactId) === Boolean(args.url)) throw new Error('Supply exactly one artifactId or HTTP(S) url.');
     if (args.url) {
       const url = new URL(String(args.url));
-      if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Supply an HTTPS package URL without embedded credentials.');
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.hash) throw new Error('Supply an HTTP(S) package URL without embedded credentials or a fragment.');
       await installExtensionFromURL(runtime, url.href);
       return { installed: true };
     }
@@ -234,7 +243,32 @@ try {
   const version = form.querySelector<HTMLSelectElement>('select#joomla_version');
   const components = [...(component?.options ?? [])].filter(o => /^[1-9]\d*$/.test(o.value)).map(o => ({ id: Number(o.value), name: o.label.trim() }));
   const versions = [...(version?.options ?? [])].filter(o => /^\d+$/.test(o.value)).map(o => Number(o.value));
-  if (operation === 'jcb_list_components') return { components, joomlaMajors: versions };
+  // An installed JCB version or a plugin can add compiler fields. Only expose form
+  // controls which a user can edit. The task, component, version and CSRF stay site-owned.
+  type Option = { name: string; label: string; type: string; value: string; choices?: { value: string; label: string }[] };
+  const fields = new Map<string, Option>();
+  for (const node of form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('input[name],select[name],textarea[name]')) {
+    if (node === component || node === version || node.matches(':disabled') ||
+        !/^[a-zA-Z][a-zA-Z0-9_]*(?:\[[a-zA-Z0-9_]+\])*$/.test(node.name)) continue;
+    const type = node.type;
+    const label = compiler.doc.getElementById((node.id || node.name) + '-lbl')?.textContent?.trim() || node.name;
+    const choiceLabel = (element: HTMLInputElement) => element.labels?.[0]?.textContent?.trim() || element.value;
+    if (node.tagName === 'SELECT') {
+      const select = node as HTMLSelectElement;
+      if (!select.multiple) fields.set(node.name, { name: node.name, label, type: 'select', value: select.value,
+        choices: [...select.options].filter(option => !option.disabled).map(option => ({ value: option.value, label: option.label.trim() })) });
+    } else if (type === 'radio') {
+      const input = node as HTMLInputElement;
+      const field = fields.get(node.name) ?? { name: node.name, label: compiler.doc.getElementById(node.name + '-lbl')?.textContent?.trim() || label,
+        type: 'radio', value: '', choices: [] };
+      field.choices!.push({ value: input.value, label: choiceLabel(input) });
+      if (input.checked) field.value = input.value;
+      fields.set(node.name, field);
+    } else if (['text', 'number', 'date', 'datetime-local', 'url', 'textarea'].includes(type)) {
+      fields.set(node.name, { name: node.name, label, type, value: node.value });
+    }
+  }
+  if (operation === 'jcb_list_components') return { components, joomlaMajors: versions, compilerOptions: [...fields.values()] };
   const selected = components.find(item => item.id === args.componentId);
   const major = Number(args.joomlaMajor ?? String(runtime.configuration.joomlaVersion).split('.')[0]);
   if (!component || !version || !selected || !versions.includes(major)) throw new Error('Choose a component ID and target Joomla major from jcb_list_components.');
@@ -251,6 +285,15 @@ try {
   const data = new URLSearchParams();
   for (const [key, value] of new FormData(form)) if (typeof value === 'string') data.append(key, value);
   if (![...data].some(([k, v]) => /^[a-f0-9]{32}$/i.test(k) && v === '1')) throw new Error('JCB did not supply the Joomla session form token.');
+  const appliedOptions: Record<string, string> = {};
+  for (const [name, value] of Object.entries(args.options ?? {})) {
+    const field = fields.get(name);
+    if (!field || typeof value !== 'string' || (field.choices && !field.choices.some(choice => choice.value === value))) {
+      throw new Error('Choose a supported compiler field and value from jcb_list_components: ' + name);
+    }
+    data.set(name, value);
+    appliedOptions[name] = value;
+  }
   data.set(component.name, String(selected.id));
   data.set(version.name, String(major));
   data.set('task', 'compiler.compiler');
@@ -278,5 +321,5 @@ try {
     packages.push({ path: '/' + path, filename: path.split('/').pop()!, size: bytes.length, sha256: [...digest].map(n => n.toString(16).padStart(2, '0')).join('') });
   }
   if (!packages.length) throw new Error('JCB reported success without an accessible installer ZIP.');
-  return { componentId: selected.id, name: selected.name, joomlaMajor: major, packages };
+  return { componentId: selected.id, name: selected.name, joomlaMajor: major, options: appliedOptions, packages };
 }

@@ -11,6 +11,14 @@ test('published TypeScript server discovers and executes a category read through
     return { status: 200, headers: {}, data: { data: [{ type: 'categories', id: '42', attributes: { title: 'Playground test' } }] } };
   } });
   try {
+    const info = await provider.describe('provider_info', {});
+    assert(info.capabilities.tools && info.capabilities.resources);
+    const resources = await provider.describe('provider_resources', {});
+    const catalogueUri = resources.resources.find(entry => entry.uri === 'joomla://catalog/core')?.uri;
+    assert(catalogueUri);
+    const metadata = await provider.describe('provider_resource', { uri: catalogueUri });
+    assert(metadata.contents[0].text.length > 0);
+    assert.deepEqual(await provider.describe('provider_prompts', {}), { prompts: [] });
     const catalogue = await provider.listTools();
     assert(catalogue.tools.some(tool => tool.name === 'joomla_action_read'));
     const result = await provider.callTool('joomla_action_read', { action: 'content.categories.list', transport: 'api' });
@@ -56,4 +64,49 @@ test('browser transport retains native token, bounds routes and preserves optimi
 
 test('Composer site names cannot contain launcher arguments', async () => {
   await assert.rejects(connectComposerProvider('--help'), /Invalid Composer site alias/);
+});
+
+test('the embedded JCB provider verifies a permanent delete against the same browser site', async () => {
+  const collection = 'v1/componentbuilder/languages';
+  const item = { id: '7', type: 'languages', attributes: { id: 7, name: 'Fixture', langtag: 'en-NZ', published: -2 } };
+  let removed = false;
+  const requests = [];
+  const provider = await createJoomlaProvider({ call: async (operation, args) => {
+    if (operation === 'workspace_info') return { workspaceId: 'local', siteUrl: 'https://example.test/__site/jcb/' };
+    assert.equal(operation, 'joomla.api');
+    assert.equal(args.workspaceId, 'local');
+    requests.push([args.method, args.path]);
+    if (args.method === 'GET' && args.path === collection) {
+      return { status: 200, headers: {}, data: { data: removed ? [] : [item] } };
+    }
+    assert.equal(args.path, collection + '/7');
+    if (args.method === 'DELETE') {
+      removed = true;
+      return { status: 204, headers: {}, data: null };
+    }
+    assert.equal(args.method, 'GET');
+    return removed ? { status: 404, headers: {}, data: null } : { status: 200, headers: {}, data: { data: item } };
+  } });
+  const call = async (name, args) => {
+    const result = await provider.callTool(name, args);
+    assert.notEqual(result.isError, true, JSON.stringify(result.content));
+    return result.structuredContent;
+  };
+  try {
+    const action = 'jcb.api.languages.delete';
+    const discovery = await call('joomla_actions_search', { domain: 'jcb', text: action, includeWrites: true });
+    assert(discovery.actions.some(entry => entry.id === action));
+    const form = await call('joomla_action_describe', { action: 'jcb.api.languages.create' });
+    assert.equal(form.availability.executable, true);
+    const permission = await call('joomla_permission_request', {
+      toolsets: ['jcb.write'], duration: 'once', reason: 'Remove the test language',
+    });
+    await call('joomla_permission_approve', { requestId: permission.requestId, acknowledgement: permission.acknowledgement });
+    const plan = await call('joomla_action_write_plan', {
+      action, transport: 'api', input: { id: 7 }, idempotencyKey: '409aadf1-c1f7-4f43-bc47-824fa196ba05', dryRun: false,
+    });
+    const result = await call('joomla_write_apply', { confirmationToken: plan.confirmationToken });
+    assert.equal(result.verification.status, 'verified', JSON.stringify(result.verification));
+    assert.deepEqual(requests.slice(-3), [['DELETE', collection + '/7'], ['GET', collection + '/7'], ['GET', collection]]);
+  } finally { await provider.close(); }
 });

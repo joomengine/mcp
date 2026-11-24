@@ -36,11 +36,26 @@ try {
     assert.equal(site.healthy, true);
     assert.equal(site.deployId, deployId);
     assert.match(site.joomlaVersion, /^6\./);
+    const protocol = await call('provider_info', { provider: 'joomla' });
+    assert(protocol.serverInfo.name && protocol.capabilities.tools && protocol.capabilities.resources);
+    const resources = await call('provider_resources', { provider: 'joomla' });
+    assert(resources.resources.some(entry => entry.uri === 'joomla://catalog/core'));
+    const consoleOutput = await call('site_console', { argv: ['list', '--raw'] });
+    assert.equal(consoleOutput.exitCode, 0);
+    assert.match(consoleOutput.output, /cache:clean/);
     if (deployId === 'blank') {
       const result = await call('joomla_call', { name: 'joomla_action_read',
         arguments: { action: 'content.categories.list', transport: 'api', input: { limit: 1 } } });
       assert.match(JSON.stringify(result), /[Uu]ncategorised/);
     } else {
+      const nativeInfo = await call('provider_info', { provider: 'native' });
+      assert(nativeInfo.serverInfo.name && nativeInfo.capabilities.tools);
+      const { resources } = await call('provider_resources', { provider: 'native' });
+      assert(Array.isArray(resources));
+      if (resources.length) {
+        const returned = await call('provider_resource', { provider: 'native', uri: resources[0].uri });
+        assert(returned.contents.length > 0);
+      }
       const { tools } = await call('native_tools');
       assert(tools.some(tool => tool.name === 'joomla_action_read'));
       const result = await call('native_call', { name: 'joomla_action_read',
@@ -48,6 +63,12 @@ try {
       assert.match(JSON.stringify(result), /[Uu]ncategorised/);
       const catalogue = await call('jcb_list_components');
       assert(Array.isArray(catalogue.components));
+      const directJcb = (name, args) => call('joomla_call', { name, arguments: args });
+      const action = 'jcb.api.joomla_components.list';
+      const discovery = await directJcb('joomla_actions_search', { domain: 'jcb', text: action });
+      assert(discovery.actions.some(entry => entry.id === action));
+      const components = await directJcb('joomla_action_read', { action, transport: 'api', input: { limit: 1 } });
+      assert.equal(components.data.data[0]?.type, 'joomla_components');
     }
     const path = '/agent-proof.html';
     await call('file_write', { path, expectedRevision: null, content:

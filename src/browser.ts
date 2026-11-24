@@ -1,4 +1,6 @@
 import { chromium, type JSHandle, type Page } from 'playwright';
+import { connectOwner } from './attach-owner.js';
+import { isAbsolute } from 'node:path';
 import { browserHandlerSource } from './browser-router.js';
 import { playgroundBase } from './browser-catalog.js';
 export { getDeploymentCatalog } from './browser-catalog.js';
@@ -11,6 +13,8 @@ export interface Workspace {
 export interface CloudOptions {
   baseURL?: string;
   deployId?: string;
+  profileDirectory?: string;
+  input?: Record<string, unknown>;
   configuration?: Record<string, unknown>;
   executablePath?: string;
   headless?: boolean;
@@ -53,10 +57,13 @@ function deadline<T>(work: Promise<T>, milliseconds: number, message: string): P
 /** Boot through the deployed JavaScript API in a fresh, isolated browser profile. */
 export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Workspace> {
   const base = playgroundBase(options.baseURL);
-  const browser = await chromium.launch({ executablePath: options.executablePath, headless: options.headless ?? true });
+  if (options.profileDirectory && !isAbsolute(options.profileDirectory)) throw new Error('JOOMENGINE_PROFILE_DIR must be an absolute, dedicated Chromium profile directory.');
+  const settings = { executablePath: options.executablePath, headless: options.headless ?? true };
+  const browser = options.profileDirectory ? undefined : await chromium.launch(settings);
+  const context = browser ? await browser.newContext() : await chromium.launchPersistentContext(options.profileDirectory!, settings);
+  async function releaseBrowser() { if (browser) await browser.close(); else await context.close(); }
   try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const page = context.pages()[0] ?? await context.newPage();
     // Rocket handles the service-worker takeover and the controlled isolation reloads.
     // start=0 leaves its deployment idle while the agent provisions its own API handle.
     const setup = new URL(base);
@@ -64,6 +71,44 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
     await page.goto(setup.href, { waitUntil: 'domcontentloaded', timeout: 120_000 });
     await page.waitForFunction(() => document.documentElement.dataset.playgroundEnvironment === 'ready',
       undefined, { timeout: 120_000 });
+    const ownerAPI = await page.evaluate(async base => {
+      const shell = await import(new URL('src/app.mjs', base).href);
+      return typeof shell.getOwnerWorkspace === 'function';
+    }, base.href);
+    if (ownerAPI) {
+      const input = { ...options.input };
+      if (input.idle && Object.keys(input).some(key => key !== 'idle') ||
+        input.savedSiteKey && Object.keys(input).some(key => key !== 'savedSiteKey')) {
+        throw new Error('Choose a fresh deployment, an idle dashboard or one savedSiteKey.');
+      }
+      if (input.savedSiteKey && !options.profileDirectory) throw new Error('Opening a saved site across sessions requires JOOMENGINE_PROFILE_DIR.');
+      await deadline(page.evaluate(async ({ base, input }) => {
+        const shell = await import(new URL('src/app.mjs', base).href);
+        const owner = shell.getOwnerWorkspace();
+        const end = Date.now() + 120000;
+        while (owner.state().phase === 'initializing' || owner.state().phase === 'busy') {
+          if (Date.now() >= end) throw new Error('The Playground owner did not finish initializing.');
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (input.idle) return;
+        if (input.savedSiteKey) { await owner.perform('resume', { storageKey: input.savedSiteKey }); return; }
+        if (!input.deployId && !input.document && !input.shareURL && !input.sourceURL && !input.configuration?.deployId) input.deployId = 'jcb-mcp';
+        await owner.perform('open', input);
+      }, {base: base.href, input: input as Record<string, any>}), 15 * 60_000, 'Timed out opening the Playground site.');
+      const owner = await page.evaluateHandle('(' + connectOwner.toString() + ')(' + JSON.stringify(base.href) + ',' +
+        JSON.stringify(!input.idle && !input.savedSiteKey && !options.profileDirectory) + ')');
+      return await workspaceFromHandle(page, owner, async () => {
+        try {
+          if (options.profileDirectory) await owner.evaluate(async (connection: any) => {
+            const api = connection.agentCurrent().agentOwner;
+            if (api.state().phase === 'running') await api.perform('stop', {workspaceId: api.state().workspaceId});
+          });
+        } finally { await releaseBrowser(); }
+      });
+    }
+    if (options.profileDirectory || options.input?.idle || options.input?.savedSiteKey || options.input?.document || options.input?.sourceURL || options.input?.shareURL) {
+      throw new Error('This workflow requires the current Playground owner API. Update or reload the selected Playground.');
+    }
     const owner = await deadline(page.evaluateHandle(async ({ base, deployId, configuration }) => {
       const load = (path: string) => import(new URL(path, base).href);
       const [{ createPlayground }, { parseCatalog }, { loadDeployCatalog, resolveDeployConfiguration }] = await Promise.all([
@@ -159,10 +204,10 @@ export async function openCloudWorkspace(options: CloudOptions = {}): Promise<Wo
       try {
         await deadline(owner.evaluate(async (site: any) => (site.agentCurrent?.() ?? site).close()), 30_000,
           'The Joomla runtime did not finish closing.');
-      } finally { await browser.close(); }
+      } finally { await releaseBrowser(); }
     });
   } catch (error) {
-    await browser.close();
+    await releaseBrowser();
     throw error;
   }
 }

@@ -15,7 +15,7 @@ export class BrowserDiagnostics {
   constructor(
     private readonly request: Request,
     private readonly subscribe: Subscribe,
-    private readonly firefox?: string
+    private firefox?: string
   ) {}
 
   private record(frame: string | undefined, level: string, text: string) {
@@ -94,6 +94,18 @@ export class BrowserDiagnostics {
     } catch (error) {
       for (const remove of this.listeners.splice(0)) remove();
       throw error;
+    }
+  }
+
+  async reconnectFirefox(context: string) {
+    for (const remove of this.listeners.splice(0)) remove();
+    this.frames.clear();
+    this.firefox = context;
+    if (this.tracking) {
+      // Diagnostic events are unavailable while detached. Subscribe again for
+      // the new context; snapshot() retries if this session is still settling.
+      this.tracking = false;
+      try { await this.enable(); } catch { /* Preserve the completed owner operation's result. */ }
     }
   }
 

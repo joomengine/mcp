@@ -49,7 +49,7 @@ async function fixture(t) {
   const modules = new Map(await Promise.all(['runtime-views.mjs', 'mcp.mjs', 'i18n.mjs', 'locales/en.mjs'].map(async module => [
     '/src/' + module, await readFile(path.join(process.env.PLAYGROUND_SOURCE, 'src', module)),
   ])));
-  const owner = `<title>Primary owner</title><button id="reload-owner" onclick="setTimeout(()=>location.reload(),30)">Reload owner</button><button style="position:fixed;top:0;left:0;z-index:5" id="open-idle" onclick="window.open('/?second=1','idle-owner')">Open idle owner</button><iframe id="site-frame" src="/__site/fixture/"></iframe>
+  const owner = `<title>Primary owner</title><button id="reload-owner" onclick="setTimeout(()=>location.reload(),30)">Reload owner</button><button id="interrupt-restore" onclick="this.dataset.armed='true'">Reload during restore</button><output id="restore-count"></output><button style="position:fixed;top:0;left:0;z-index:5" id="open-idle" onclick="window.open('/?second=1','idle-owner')">Open idle owner</button><iframe id="site-frame" src="/__site/fixture/"></iframe>
     <script>
       window.addEventListener('message', event => {
         const frame = document.querySelector('.jec-ai-frame');
@@ -97,14 +97,23 @@ async function fixture(t) {
       },
     };
     const host = createRuntimeViewHost({getRuntime: () => runtime, baseURL: location.origin + '/'});
+    const counter = document.getElementById('restore-count');
+    const showCount = () => { counter.textContent = 'Restore attempts: ' + (sessionStorage.restoreCount || 0); };
+    showCount();
     document.getElementById('upload-site-file').onchange = () => {
+      sessionStorage.restoreCount = Number(sessionStorage.restoreCount || 0) + 1;
+      showCount();
       const dialog = document.createElement('dialog');
       dialog.dataset.liveReplacement = 'true';
       const heading = document.createElement('h2');
       heading.id = 'live-replacement-title'; heading.textContent = t('lifecycle.replaceConfirm');
       const accept = document.createElement('button');
       accept.dataset.replaceChoice = 'continue';
-      accept.onclick = () => { dialog.remove(); runtime.workspace.id = 'restored-owner'; host.update(); };
+      accept.onclick = () => {
+        if (document.getElementById('interrupt-restore').dataset.armed) { location.reload(); return; }
+        // With Firefox the first debugger probe must see a pending restore.
+        setTimeout(() => { dialog.remove(); runtime.workspace.id = 'restored-owner'; host.update(); }, ${mode === 'firefox' ? 9500 : 0});
+      };
       dialog.append(heading,accept); document.body.append(dialog); dialog.showModal();
     };
   </script>`;
@@ -347,6 +356,7 @@ test('attach to the selected running owner, preserve site and process across dis
     assert.equal((await active.call('workspace_info', {})).workspaceId, info.workspaceId);
     const restored = await active.call('site_restore', {id:saved.id, replaceWorkspaceId:info.workspaceId});
     assert.deepEqual(restored, {workspaceId:'restored-owner', restored:true});
+    await active.call('browser_inspect',{scope:'playground',waitForText:'Restore attempts: 1'});
     await active.call('browser_pointer',{scope:'playground',x:40,y:15});
     let choices;
     for (let i=0;i<50;i++) {
@@ -382,6 +392,18 @@ test('attach to the selected running owner, preserve site and process across dis
     active=await attachWorkspace({endpoint,playgroundUrl:base,tabId:renewed.tabId});
     assert.equal((await active.call('workspace_info',{})).workspaceId,'existing-owner');
     await active.call('file_write',{path:'/wrong-owner',content:'first authorized write after reattachment',expectedRevision:null});
+    if (mode === 'firefox') {
+      const next = await active.call('site_export', {});
+      await active.call('browser_click', {scope:'playground',selector:'#interrupt-restore'});
+      await assert.rejects(active.call('site_restore', {id:next.id, replaceWorkspaceId:'existing-owner'}), /could not be confirmed.*workspace_attach/);
+      await assert.rejects(active.call('file_write', {path:'/replayed',content:'unexpected',expectedRevision:null}), /workspace_attach/);
+      await active.close();
+      const refreshed = (await listWorkspaceTabs({endpoint,playgroundUrl:base})).tabs.find(tab => tab.title === 'Reloaded primary owner');
+      assert.notEqual(refreshed.tabId, renewed.tabId);
+      active = await attachWorkspace({endpoint,playgroundUrl:base,tabId:refreshed.tabId});
+      await active.call('browser_inspect',{scope:'playground',waitForText:'Restore attempts: 2'});
+    }
+
 
 
   }

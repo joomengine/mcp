@@ -94,15 +94,18 @@ async function firefoxIdentity(wire: DebugConnection, tab: Tab, base: URL) {
     },
     10_000
   );
-  return reply.type === 'success' && reply.result.type === 'string' ? JSON.parse(reply.result.value) : null;
+  return reply.type === 'success' && reply.result.type === 'string'
+    ? { ...JSON.parse(reply.result.value), realm: reply.realm as string } : null;
 }
 
 export async function selectedFirefoxTab(wire: DebugConnection, base: URL, id?: string) {
   const tabs = await firefoxTabs(wire);
-  if (!id) return selectedTab(tabs, base);
-  for (const tab of tabs.filter((t) => isOwnerURL(t.url, base))) {
+  const candidates = id ? tabs.filter((t) => isOwnerURL(t.url, base)) : [selectedTab(tabs, base)];
+  for (const tab of candidates) {
     const info = await firefoxIdentity(wire, tab, base);
-    if (info?.documentId === id) return tab;
+    if (info && (!id || info.documentId === id)) {
+      return { ...tab, documentId: info.documentId as string, realm: info.realm as string };
+    }
   }
   throw new Error('That Playground owner tab is no longer open. Call workspace_list to select its current tabId.');
 }
@@ -125,7 +128,7 @@ export async function discoverTabs(endpoint: URL, base: URL, activeFirefox?: Deb
           if (firefox) {
             const identity = await firefoxIdentity(firefox, tab, base);
             if (!identity) return null;
-            const { documentId, ...metadata } = identity;
+            const { documentId, realm: _realm, ...metadata } = identity;
             return { tabId: documentId, ...metadata };
           } else {
             const wire = await DebugConnection.open(debuggerAddress(tab as CDPTab, endpoint));

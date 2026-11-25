@@ -6,6 +6,8 @@ import { BrowserDiagnostics } from './browser-diagnostics.js';
 import { browserInput, usesNativeInput } from './browser-input.js';
 import { cdpTabs, debuggerAddress, discoverTabs, selectedFirefoxTab, selectedTab } from './attach-discovery.js';
 import { DebugConnection } from './attach-wire.js';
+import { holdTransition, readTransition, startsDatabase } from './firefox-transition.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export interface AttachOptions {
   endpoint: string;
@@ -83,43 +85,111 @@ async function connectCDP(endpoint: URL, base: URL, tabId?: string): Promise<Run
 }
 
 async function connectFirefox(endpoint: URL, base: URL, tabId?: string): Promise<RuntimeConnection> {
-  const wire = await DebugConnection.open(endpoint);
-  let active = false;
+  async function open() {
+    const wire = await DebugConnection.open(endpoint);
+    try {
+      await wire.request('session.new', { capabilities: { alwaysMatch: { unhandledPromptBehavior: { default: 'ignore' } } } }, 15_000);
+      return wire;
+    } catch (error) { wire.close(); throw error; }
+  }
+  let wire: DebugConnection | undefined = await open();
+  let detached = false;
+  let transitioning = false;
+  const stop = new AbortController();
+  const current = () => {
+    if (!wire || detached) throw new Error('The owner connection is unavailable. Call workspace_close, workspace_list, then workspace_attach and verify the result before retrying a write.');
+    return wire;
+  };
   async function endSession() {
-    try { if (active) await wire.request('session.end', {}, 5_000); }
-    finally { wire.close(); }
+    const previous = wire;
+    wire = undefined;
+    try { await previous?.request('session.end', {}, 5_000); }
+    finally { previous?.close(); }
   }
   try {
-    await wire.request('session.new', { capabilities: { alwaysMatch: { unhandledPromptBehavior: { default: 'ignore' } } } }, 15_000);
-    active = true;
     const tab = await selectedFirefoxTab(wire, base, tabId);
+    const { documentId } = tab;
+    let context = tab.id;
     const reply = await wire.request('script.callFunction', {
       functionDeclaration: connectOwner.toString(), arguments: [{ type: 'string', value: base.href }],
-      target: { context: tab.id }, awaitPromise: true, resultOwnership: 'root',
+      target: { realm: tab.realm }, awaitPromise: true, resultOwnership: 'root',
     });
-    const handle = checkedBiDi(reply)?.handle;
+    let handle = checkedBiDi(reply)?.handle;
     if (!handle) throw new Error('Firefox could not retain the selected Playground workspace.');
-    // The realm belongs to this document. An unrelated navigation invalidates our handle.
-    const target = { realm: reply.realm };
-    const call = async (functionDeclaration: string, values: string[]) => checkedBiDi(await wire.request('script.callFunction', {
+    let realm = reply.realm;
+    const call = async (functionDeclaration: string, values: string[]) => checkedBiDi(await current().request('script.callFunction', {
       functionDeclaration, this: { handle }, arguments: values.map(value => ({ type: 'string', value })),
-      target, awaitPromise: true,
+      target: { realm }, awaitPromise: true,
     }));
     const invoke = async (operation: string, args: Record<string, unknown>, fn = browserHandlerSource(operation)) => {
       const reply = await call('async function(op, input) { return JSON.stringify(await (' + fn + ').call(this, op, JSON.parse(input))); }', [operation, JSON.stringify(args)]);
       return reply.type === 'undefined' ? undefined : JSON.parse(reply.value);
     };
-    const request = wire.request.bind(wire);
-    const diagnostics = new BrowserDiagnostics(request, wire.on.bind(wire), tab.id);
-    const dialogs = debuggerDialogs(request, wire.on.bind(wire), tab.id);
+    const request = (method: string, params: Record<string, unknown>) => current().request(method, params);
+    const subscribe = (method: string, listener: (event: any) => void) => current().on(method, listener);
+    const diagnostics = new BrowserDiagnostics(request, subscribe, context);
+
+    async function transition(operation: string, args: Record<string, unknown>, fn: string) {
+      transitioning = true;
+      const token = crypto.randomUUID();
+      let reclaimed = false;
+      const start = 'function(token, id, op, input) { (' + holdTransition.toString() + ').call(this, token, id, () => (' + fn + ').call(this, op, JSON.parse(input))); }';
+      try {
+        // This is the only invocation of the operation. Later sessions can only reclaim its receipt.
+        await call(start, [token, documentId, operation, JSON.stringify(args)]);
+        const deadline = Date.now() + 610_000;
+        for (;;) {
+          await endSession();
+          await delay(8_000, undefined, { signal: stop.signal });
+          if (Date.now() >= deadline) throw new Error('The owner transition is still pending. Reattach and verify its result before retrying a write.');
+          wire = await open();
+          if (detached) throw new Error('The owner was detached during its transition.');
+          const selected = await selectedFirefoxTab(wire, base, documentId);
+          context = selected.id;
+          const check = await wire.request('script.callFunction', {
+            functionDeclaration: readTransition.toString(), arguments: [{ type: 'string', value: token }],
+            target: { realm: selected.realm }, awaitPromise: false, resultOwnership: 'root', serializationOptions: { maxObjectDepth: 0 },
+          });
+          const receipt = checkedBiDi(check)?.handle;
+          if (!receipt) continue;
+          const read = (functionDeclaration: string, retain = false) => current().request('script.callFunction', {
+            functionDeclaration, this: { handle: receipt }, target: { realm: check.realm },
+            awaitPromise: false, resultOwnership: retain ? 'root' : 'none', serializationOptions: { maxObjectDepth: 0 },
+          }).then(checkedBiDi);
+          const result = JSON.parse((await read('function() { return this.result; }')).value);
+          handle = (await read('function() { return this.owner; }', true)).handle;
+          if (!handle) throw new Error('Firefox could not retain the original owner after its transition.');
+          realm = check.realm;
+          await read('function() { this.release(); }');
+          await wire.request('script.disown', { handles: [receipt], target: { realm } }).catch(() => {});
+          await diagnostics.reconnectFirefox(context);
+          reclaimed = true;
+          if ('error' in result) throw new Error(result.error);
+          return result.value;
+        }
+      } catch (error) {
+        if (reclaimed) throw error;
+        const cause = error instanceof Error ? error.message : String(error);
+        throw new Error('The Firefox owner transition could not be confirmed. Call workspace_close, workspace_list, then workspace_attach with the intended tabId. Verify the result before retrying a write. ' + cause, { cause: error });
+      } finally {
+        transitioning = false;
+        if (!reclaimed || detached) await endSession().catch(() => {});
+      }
+    }
+
     return {
-      list: () => discoverTabs(endpoint, base, wire),
-      invoke: (operation, args, fn) => operation === 'browser_diagnostics' ? diagnostics.snapshot(invoke,args)
-        : withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
-        ? browserInput(operation, args, invoke, request, tab.id) : invoke(operation, args, fn)),
+      list: () => discoverTabs(endpoint, base, current()),
+      invoke: (operation, args, fn) => {
+        if (transitioning) throw new Error('The selected Playground has an operation in progress.');
+        if (startsDatabase(operation)) return transition(operation, args, fn);
+        const dialogs = debuggerDialogs(request, subscribe, context);
+        return operation === 'browser_diagnostics' ? diagnostics.snapshot(invoke,args)
+          : withBrowserDialogs(actionDialogs(operation, args), dialogs, () => usesNativeInput(operation)
+          ? browserInput(operation, args, invoke, request, context) : invoke(operation, args, fn));
+      },
       async detach() {
-        try { await releaseOwner(() => call('function () { this.dispose(); }', [])); }
-        finally { await endSession(); }
+        try { if (wire && !transitioning) await releaseOwner(() => call('function () { this.dispose(); }', [])); }
+        finally { detached = true; stop.abort(); await endSession(); }
       },
     };
   } catch (error) { await endSession().catch(() => {}); throw error; }

@@ -71,7 +71,7 @@ A screenshot returns a PNG image and its workspace artifact ID. Use `artifact_sa
 
 ## Verify a rendered extension
 
-Call `browser_diagnostics` before navigating to an installed extension or exercising its controls. Call it again to read JavaScript exceptions and console warnings/errors from this Joomla site, along with resource names, load times, transfer sizes and HTTP status where the browser exposes it. Use `offset` and `limit` to page through resources. External resources are represented by their origin. Use `clear: true` to reset the collected messages between test cases. A fresh connection starts a new observation period.
+Call `browser_diagnostics` before navigating to an installed extension or exercising its controls. Call it again to read JavaScript exceptions and console warnings/errors from this Joomla site, along with resource names, load times, transfer sizes and HTTP status where the browser exposes it. Use `offset` and `limit` to page through resources. External resources are represented by their origin. Use `clear: true` to reset the collected messages between test cases. A fresh connection starts a new observation period. Firefox pauses debugger event collection during site transitions that can start a MariaDB worker. Collection resumes when the agent reconnects to the same owner document.
 
 ## Verify an upstream Playground change
 

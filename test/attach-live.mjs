@@ -111,8 +111,17 @@ async function fixture(t) {
       accept.dataset.replaceChoice = 'continue';
       accept.onclick = () => {
         if (document.getElementById('interrupt-restore').dataset.armed) { location.reload(); return; }
-        // With Firefox the first debugger probe must see a pending restore.
-        setTimeout(() => { dialog.remove(); runtime.workspace.id = 'restored-owner'; host.update(); }, ${mode === 'firefox' ? 9500 : 0});
+        // The dashboard disables uploads throughout an accepted replacement. Keep
+        // the fixture busy until its companions have received the new workspace.
+        const upload = document.getElementById('upload-site-button');
+        upload.disabled = true;
+        dialog.remove();
+        setTimeout(async () => {
+          runtime.workspace.id = 'restored-owner';
+          host.update();
+          await host.prepareTransition('restore');
+          upload.disabled = false;
+        }, ${mode === 'firefox' ? 9500 : 0});
       };
       dialog.append(heading,accept); document.body.append(dialog); dialog.showModal();
     };

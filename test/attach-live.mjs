@@ -173,14 +173,14 @@ async function reportTransitionFailure(endpoint, base) {
   }
 }
 
-async function exerciseAttachedComponent(endpoint) {
+async function exerciseAttachedComponent(endpoint, base) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
   const { exerciseJcb } = await import('./jcb-scenario.mjs');
   const client = new Client({name:'attached-jcb-acceptance',version:'1'});
   await client.connect(new StdioClientTransport({
     command: process.execPath, args: [fileURLToPath(new URL('../dist/cli.js', import.meta.url))],
-    env: {...process.env, JOOMENGINE_BROWSER_ENDPOINT:endpoint}, stderr:'inherit',
+    env: {...process.env, JOOMENGINE_BROWSER_ENDPOINT:endpoint, JOOMENGINE_PLAYGROUND_URL:base}, stderr:'inherit',
   }));
   try {
     const attached = await client.callTool({name:'workspace_attach',arguments:{}});
@@ -199,8 +199,8 @@ async function exerciseAttachedComponent(endpoint) {
 test('attach to the selected running owner, preserve site and process across disconnect', {timeout: 50 * 60_000}, async t => {
   if (!['chromium', 'firefox'].includes(mode)) throw new Error('Unknown ATTACH_BROWSER.');
   const executable = process.env.ATTACH_EXECUTABLE || mode;
-  const base = hosted ? 'https://playground.joomengine.org/' : await fixture(t);
-  const initialUrl = hosted ? base + '?deploy=jcb-mcp&start=0' : base;
+  const base = hosted ? (process.env.JOOMENGINE_PLAYGROUND_URL || 'https://playground.joomengine.org/') : await fixture(t);
+  const initialUrl = hosted ? new URL('?deploy=jcb-mcp&start=0', base).href : base;
   const profile = await mkdtemp(path.join(tmpdir(), 'joomengine-attach-'));
   const args = mode === 'firefox' ? ['--headless','--no-remote','--profile',profile,'--remote-debugging-port','0',initialUrl] :
     ['--headless','--disable-gpu','--no-first-run','--disable-dev-shm-usage','--remote-debugging-address=127.0.0.1',
@@ -285,6 +285,7 @@ test('attach to the selected running owner, preserve site and process across dis
   active = await attachWorkspace({endpoint,playgroundUrl:base});
   assert.equal((await active.call('workspace_info', {})).workspaceId, info.workspaceId);
   assert.equal((await active.call('file_read', {path:target})).content, content);
+  if (hosted && process.env.ATTACH_SMOKE_ONLY === '1') return;
   if (!hosted) {
     const scope = 'site';
     const first = await active.listAttachedTabs();
@@ -393,7 +394,7 @@ test('attach to the selected running owner, preserve site and process across dis
   await active.close();
   active = undefined;
   if (hosted) {
-    try { await exerciseAttachedComponent(endpoint); }
+    try { await exerciseAttachedComponent(endpoint, base); }
     catch (error) {
       await reportTransitionFailure(endpoint, base).catch(() => console.error('Playground owner diagnostics unavailable.'));
       throw error;

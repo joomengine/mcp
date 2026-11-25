@@ -94,6 +94,9 @@ jobs:
     name: Attach and reconnect (${{ matrix.browser }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -121,11 +124,32 @@ jobs:
         run: |
           if [ "$ATTACH_BROWSER" = chromium ]; then export ATTACH_EXECUTABLE="$(command -v google-chrome)"; fi
           node --test test/attach-live.mjs
-      - name: Exercise the running site in the hosted Playground
+      - name: Resolve the explicitly linked Playground PR artifact
+        id: upstream
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/pr-playground-artifact.sh
+      - name: ${{ steps.upstream.outputs.paired == 'true' && 'Smoke test attachment and reconnect against production' || 'Exercise the running site in the hosted Playground' }}
         env:
           ATTACH_BROWSER: ${{ matrix.browser }}
           ATTACH_HOSTED: '1'
+          ATTACH_SMOKE_ONLY: ${{ steps.upstream.outputs.paired == 'true' && '1' || '' }}
         run: |
+          if [ "$ATTACH_BROWSER" = chromium ]; then export ATTACH_EXECUTABLE="$(command -v google-chrome)"; fi
+          node --test test/attach-live.mjs
+      - name: Exercise the full attached site on the verified Playground PR build
+        if: steps.upstream.outputs.paired == 'true'
+        env:
+          ATTACH_BROWSER: ${{ matrix.browser }}
+          ATTACH_HOSTED: '1'
+          JOOMENGINE_PLAYGROUND_URL: http://127.0.0.1:4173/
+        run: |
+          HOST=127.0.0.1 PORT=4173 node upstream-playground/scripts/serve.mjs > "$RUNNER_TEMP/playground-server.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          curl --fail --silent --show-error --retry 5 --retry-connrefused "${JOOMENGINE_PLAYGROUND_URL}assets/manifest.json" -o "$RUNNER_TEMP/served-manifest.json"
+          cmp upstream-playground/dist/assets/manifest.json "$RUNNER_TEMP/served-manifest.json"
           if [ "$ATTACH_BROWSER" = chromium ]; then export ATTACH_EXECUTABLE="$(command -v google-chrome)"; fi
           node --test test/attach-live.mjs
   fresh-component:

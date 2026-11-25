@@ -72,3 +72,7 @@ A screenshot returns a PNG image and its workspace artifact ID. Use `artifact_sa
 ## Verify a rendered extension
 
 Call `browser_diagnostics` before navigating to an installed extension or exercising its controls. Call it again to read JavaScript exceptions and console warnings/errors from this Joomla site, along with resource names, load times, transfer sizes and HTTP status where the browser exposes it. Use `offset` and `limit` to page through resources. External resources are represented by their origin. Use `clear: true` to reset the collected messages between test cases. A fresh connection starts a new observation period.
+
+## Verify an upstream Playground change
+
+A pull request that depends on an open Playground PR can include a single line in its description beginning with `Depends on ` followed by the full GitHub URL of that PR. The browser attachment jobs verify the upstream run and artifact digest, serve the tested distribution on loopback, and run the complete scenario in Chromium and Firefox. They also open a JCB workspace on the public Playground, reconnect, and read back a saved file. Other PRs, main, and scheduled compatibility checks run the complete hosted scenario on production.

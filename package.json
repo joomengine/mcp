@@ -33,8 +33,8 @@
     "prepack": "npm run skills && npm run build"
   },
   "dependencies": {
-    "@joomengine/joomla-mcp": "^0.8.0",
-    "@modelcontextprotocol/sdk": "1.32.0",
+    "@joomengine/joomla-mcp": "^0.8.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "^8.17.1",
     "fflate": "^0.8.3",
     "playwright": "1.62.1"

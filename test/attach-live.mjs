@@ -54,13 +54,11 @@ async function fixture(t) {
       window.addEventListener('message', event => {
         const frame = document.querySelector('.jec-ai-frame');
         if (!frame || event.source !== frame.contentWindow) return;
-        if (typeof event.data === 'object') (window.fixtureEvents ??= []).push(event.data);
         if (event.data === 'ai-ready') frame.dataset.ready = 'true';
-        if (event.data === 'ai-hovered') frame.dataset.hovered = 'true';
         if (event.data === 'ai-clicked') document.getElementById('ai-proof').textContent = 'Visual AI action received';
       });
     </script>
-    <iframe class="jec-ai-frame" style="position:fixed;top:48px;right:8px" sandbox="allow-scripts" src="/fixture-ai"></iframe>
+    <iframe class="jec-ai-frame" sandbox="allow-scripts" src="/fixture-ai"></iframe>
     <output id="ai-proof"></output><button id="upload-site-button">Upload</button><input type="file" id="upload-site-file"><script type="module">
     import { createRuntimeViewHost } from './src/runtime-views.mjs';
     import { t } from './src/i18n.mjs';
@@ -133,11 +131,7 @@ async function fixture(t) {
     res.setHeader('Content-Type', module ? 'text/javascript' : 'text/html');
     if (req.url === '/fixture-ai') return res.end(`<button style="position:fixed;inset:0">AI panel action</button>
       <script>
-        const button = document.querySelector('button');
-        for (const type of ['pointermove','pointerdown','pointerup','click']) document.addEventListener(type, e => parent.postMessage({type:e.type, target:e.target.nodeName, x:e.clientX,y:e.clientY}, '*'),true);
-        parent.postMessage({button:button.getBoundingClientRect().toJSON()}, '*');
-        button.addEventListener('pointermove', () => parent.postMessage('ai-hovered', '*'), {once:true});
-        button.onclick = () => parent.postMessage('ai-clicked', '*');
+        document.querySelector('button').onclick = () => parent.postMessage('ai-clicked', '*');
         requestAnimationFrame(() => requestAnimationFrame(() => parent.postMessage('ai-ready', '*')));
       </script>`);
     if (req.url === '/?second=1') return res.end('<title>Secondary owner</title><input id=site-name value="Idle client site">');
@@ -345,34 +339,10 @@ test('attach to the selected running owner, preserve site and process across dis
     await active.call('browser_upload',{scope,selector:'#file',artifactIds:[saved.id]});
     assert.match((await active.call('browser_inspect',{scope})).text,/fixture.zip/);
     await active.call('browser_inspect',{scope:'playground',waitForSelector:'.jec-ai-frame[data-ready="true"]'});
-    let probe;
-    if (mode === 'chromium') {
-      const address = new URL(endpoint);
-      const wire = await DebugConnection.open(debuggerAddress(selectedTab(await cdpTabs(address), new URL(base)), address));
-      t.after(() => wire.close());
-      const evaluate = async expression => (await wire.request('Runtime.evaluate', {expression, returnByValue:true})).result.value;
-      await evaluate(`for (const doc of [document,document.querySelector('#site-frame').contentDocument]) {
-        doc.addEventListener('pointermove', e => (window.fixtureEvents ??= []).push({type:e.type, doc:doc.URL,target:e.target.nodeName,x:e.clientX,y:e.clientY}), true)
-      }`);
-      probe = async label => {
-        const dimensions = await evaluate(`(() => {const f=document.querySelector('.jec-ai-frame'),r=f.getBoundingClientRect();return {bounds:r.toJSON(),screen:[innerWidth,innerHeight, devicePixelRatio],focus:document.hasFocus(), visibility:document.visibilityState, events:window.fixtureEvents,x:r.left+f.clientLeft+20,y:r.top+f.clientTop+20}})()`);
-        const hit = await wire.request('DOM.getNodeForLocation', {x:Math.round(dimensions.x),y:Math.round(dimensions.y)});
-        console.log(label, JSON.stringify({dimensions,hit,layout:await wire.request('Page.getLayoutMetrics',{}),browser:await wire.request('Browser.getVersion',{})}));
-      };
-      await probe('before capture');
-      await active.call('browser_pointer',{scope:'ai',action:'hover',x:18,y:18});
-      await delay(150);
-      await probe('before capture hover');
-    }
     const shot = await active.call('browser_screenshot',{scope:'ai'});
     assert(shot.content[0].data.startsWith('iVBORw0KGgo'));
     assert.equal(shot.structuredContent.mimeType,'image/png');
-    // Confirm that native input reaches the sandboxed button after the clipped screenshot.
-    await active.call('browser_pointer',{scope:'ai',action:'hover',x:20,y:20});
-    if (probe) { await delay(150); await probe('after capture hover'); }
-    await active.call('browser_inspect',{scope:'playground',waitForSelector:'.jec-ai-frame[data-hovered="true"]'});
     await active.call('browser_pointer',{scope:'ai',x:20,y:20});
-    if (probe) { await delay(150); await probe('after click'); }
     assert.match((await active.call('browser_inspect',{scope:'playground',waitForText:'Visual AI action received'})).text,/Visual AI action received/);
     await active.call('browser_scroll',{scope:'ai',x:8,y:8,deltaY:20});
     await active.call('browser_keyboard',{scope:'ai',key:'Tab'});

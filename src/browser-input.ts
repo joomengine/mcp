@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { PNG } from 'pngjs';
 
 type Request = (method: string, params: Record<string, unknown>) => Promise<any>;
 type Invoke = (name: string, args: Record<string, any>) => Promise<any>;
@@ -23,6 +24,30 @@ const keys: Record<string, [string, number, string]> = {
 export const usesNativeInput = (name: string) =>
   ['browser_screenshot', 'browser_pointer', 'browser_keyboard', 'browser_scroll'].includes(name);
 
+type Box = { x: number; y: number; width: number; height: number };
+
+// A clipped Chromium capture temporarily resizes the selected tab. Crop its visible
+// viewport in Node so subsequent native input uses the original compositor geometry.
+async function captureChromiumRegion(request: Request, region: Box & { viewport: Box }) {
+  const { data } = await request('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  const bytes = Buffer.from(data, 'base64');
+  const view = region.viewport;
+  if (region.x === view.x && region.y === view.y && region.width === view.width && region.height === view.height)
+    return bytes;
+  const image = PNG.sync.read(bytes);
+  const scaleX = image.width / view.width;
+  const scaleY = image.height / view.height;
+  const left = Math.round((region.x - view.x) * scaleX);
+  const top = Math.round((region.y - view.y) * scaleY);
+  const right = Math.round((region.x + region.width - view.x) * scaleX);
+  const bottom = Math.round((region.y + region.height - view.y) * scaleY);
+  if (!(left >= 0 && top >= 0 && right <= image.width && bottom <= image.height && right > left && bottom > top))
+    throw new Error('The selected surface is outside the captured viewport.');
+  const cropped = new PNG({ width: right - left, height: bottom - top });
+  PNG.bitblt(image, cropped, left, top, cropped.width, cropped.height, 0, 0);
+  return PNG.sync.write(cropped);
+}
+
 /** Render and interact in the selected tab only. A separate native protocol is needed for the editor's opaque AI iframe. */
 export async function browserInput(
   name: string,
@@ -31,7 +56,9 @@ export async function browserInput(
   request: Request,
   firefoxContext?: string
 ) {
-  const region = await invoke('browser_region', { ...args, focus: name === 'browser_keyboard' });
+  const region = await invoke('browser_region', {
+    ...args, focus: name === 'browser_keyboard', captureViewport: name === 'browser_screenshot' && !firefoxContext
+  });
   if (name === 'browser_screenshot') {
     const box = {
       x: region.x + region.scrollX,
@@ -39,19 +66,14 @@ export async function browserInput(
       width: region.width,
       height: region.height
     };
-    const capture = firefoxContext
-      ? await request('browsingContext.captureScreenshot', {
+    const bytes = firefoxContext
+      ? Buffer.from((await request('browsingContext.captureScreenshot', {
           context: firefoxContext,
           origin: 'document',
           format: { type: 'image/png' },
           clip: { type: 'box', ...box }
-        })
-      : await request('Page.captureScreenshot', {
-          format: 'png',
-          clip: { ...box, scale: 1 },
-          captureBeyondViewport: false
-        });
-    const bytes = Buffer.from(capture.data, 'base64');
+        })).data, 'base64')
+      : await captureChromiumRegion(request, region);
     if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
       throw new Error('The browser did not return a PNG screenshot.');
     const sha256 = createHash('sha256').update(bytes).digest('hex');
@@ -80,7 +102,7 @@ export async function browserInput(
       return {
         structuredContent: receipt,
         content: [
-          { type: 'image', mimeType: 'image/png', data: capture.data },
+          { type: 'image', mimeType: 'image/png', data: bytes.toString('base64') },
           { type: 'text', text: JSON.stringify(receipt) }
         ]
       };

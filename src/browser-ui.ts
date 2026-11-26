@@ -308,10 +308,19 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
   }
   const doc = locate();
   if (operation === 'browser_region') {
-    let left = 0,
-      top = 0,
-      right = innerWidth,
-      bottom = innerHeight,
+    const visual = args.captureViewport && window.visualViewport;
+    const layout = shell.compatMode === 'BackCompat' ? shell.body : shell.documentElement;
+    // visualViewport excludes native scrollbars, while a CDP viewport PNG includes them.
+    const viewport = {
+      x: visual ? visual.offsetLeft : 0,
+      y: visual ? visual.offsetTop : 0,
+      width: visual ? visual.width + (innerWidth - layout.clientWidth) / visual.scale : innerWidth,
+      height: visual ? visual.height + (innerHeight - layout.clientHeight) / visual.scale : innerHeight
+    };
+    let left = viewport.x,
+      top = viewport.y,
+      right = left + viewport.width,
+      bottom = top + viewport.height,
       dx = 0,
       dy = 0;
     for (const frame of frames) {
@@ -349,7 +358,7 @@ export async function browserUiDispatch(runtime: any, operation: string, args: R
       if (doc?.elementFromPoint(hitX, hitY)?.localName === 'iframe')
         throw new Error('Select the child frame or named panel before sending native input.');
     }
-    return { x, y, width, height, scrollX: window.scrollX, scrollY: window.scrollY };
+    return { x, y, width, height, scrollX: window.scrollX, scrollY: window.scrollY, ...(args.captureViewport && { viewport }) };
   }
   if (!doc) {
     if (operation === 'browser_inspect')
